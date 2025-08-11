@@ -993,6 +993,486 @@ Then click this function again to continue setup.
             self.log_error(f"Get event details failed: {e}")
             return f"❌ **Error getting event details**: {str(e)}"
 
+    def create_event_smart(self, title: str, start_time: str, end_time: str = None, 
+                          calendar_hint: Optional[str] = None, description: Optional[str] = None, 
+                          location: Optional[str] = None) -> str:
+        """
+        Create an event with smart calendar selection
+        
+        Args:
+            title: Event title
+            start_time: Start time (various formats supported)
+            end_time: End time (optional, uses default duration if not provided)
+            calendar_hint: Calendar name hint for fuzzy matching (optional)
+            description: Event description (optional)
+            location: Event location (optional)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Creating smart event: {title}")
+
+            # Parse and validate times
+            try:
+                from dateutil.parser import parse
+                start_dt = parse(start_time)
+                
+                if end_time:
+                    end_dt = parse(end_time)
+                else:
+                    # Use default duration
+                    end_dt = start_dt + timedelta(hours=self.valves.default_event_duration_hours)
+                    
+            except ImportError:
+                return "❌ **Error**: dateutil library not available. Cannot parse dates."
+            except Exception as e:
+                return f"❌ **Invalid date/time format**: {str(e)}. Please use formats like '2024-01-15 14:30' or 'tomorrow 2pm'."
+
+            # Find target calendar
+            target_calendar_id = None
+            target_calendar_name = "Primary"
+            
+            # Get calendar list
+            calendar_list = service.calendarList().list().execute()
+            calendars = calendar_list.get('items', [])
+            
+            if calendar_hint:
+                # Smart calendar matching
+                hint_lower = calendar_hint.lower()
+                best_match = None
+                best_score = 0
+                
+                for calendar in calendars:
+                    calendar_name = calendar.get('summary', '').lower()
+                    access_role = calendar.get('accessRole', 'reader')
+                    
+                    # Only consider writable calendars
+                    if access_role in ['owner', 'writer']:
+                        # Simple fuzzy matching
+                        if hint_lower in calendar_name:
+                            score = len(hint_lower) / len(calendar_name)  # Preference for exact matches
+                            if score > best_score:
+                                best_score = score
+                                best_match = calendar
+                
+                if best_match:
+                    target_calendar_id = best_match['id']
+                    target_calendar_name = best_match.get('summary', 'Unknown')
+                else:
+                    return f"❌ **Calendar not found**: No writable calendar matching '{calendar_hint}'. Use `get_calendars()` to see available calendars."
+            
+            elif self.valves.default_calendar_name:
+                # Use configured default calendar
+                default_name_lower = self.valves.default_calendar_name.lower()
+                for calendar in calendars:
+                    calendar_name = calendar.get('summary', '').lower()
+                    access_role = calendar.get('accessRole', 'reader')
+                    
+                    if access_role in ['owner', 'writer'] and default_name_lower in calendar_name:
+                        target_calendar_id = calendar['id']
+                        target_calendar_name = calendar.get('summary', 'Unknown')
+                        break
+                        
+                if not target_calendar_id:
+                    return f"❌ **Default calendar not found**: '{self.valves.default_calendar_name}' not found or not writable."
+            
+            else:
+                # Use primary calendar
+                for calendar in calendars:
+                    if calendar.get('primary', False) and calendar.get('accessRole') in ['owner', 'writer']:
+                        target_calendar_id = calendar['id']
+                        target_calendar_name = calendar.get('summary', 'Primary')
+                        break
+                
+                if not target_calendar_id:
+                    # Fallback to first writable calendar
+                    for calendar in calendars:
+                        if calendar.get('accessRole') in ['owner', 'writer']:
+                            target_calendar_id = calendar['id']
+                            target_calendar_name = calendar.get('summary', 'Unknown')
+                            break
+
+            if not target_calendar_id:
+                return "❌ **No writable calendars found**. Please check your calendar permissions."
+
+            # Build event object
+            event = {
+                'summary': title,
+                'start': {
+                    'dateTime': start_dt.isoformat(),
+                    'timeZone': self.valves.user_timezone,
+                },
+                'end': {
+                    'dateTime': end_dt.isoformat(),
+                    'timeZone': self.valves.user_timezone,
+                }
+            }
+            
+            if description:
+                event['description'] = description
+                
+            if location:
+                event['location'] = location
+
+            # Create the event
+            self.log_debug(f"Creating event in calendar: {target_calendar_name} ({target_calendar_id})")
+            
+            created_event = service.events().insert(
+                calendarId=target_calendar_id,
+                body=event
+            ).execute()
+            
+            event_id = created_event.get('id')
+            event_link = created_event.get('htmlLink', '')
+            
+            # Format response
+            duration = end_dt - start_dt
+            
+            response = f"✅ **Event Created Successfully**\n\n"
+            response += f"**Title**: {title}\n"
+            response += f"**Calendar**: {target_calendar_name}\n"
+            response += f"**Time**: {start_dt.strftime('%A, %d %B %Y at %H:%M')} - {end_dt.strftime('%H:%M')}\n"
+            response += f"**Duration**: {duration}\n"
+            
+            if location:
+                response += f"**Location**: {location}\n"
+                
+            if description:
+                response += f"**Description**: {description[:100]}{'...' if len(description) > 100 else ''}\n"
+            
+            response += f"**Event ID**: `{event_id}`\n"
+            
+            if event_link:
+                response += f"**View in Google Calendar**: {event_link}\n"
+            
+            response += "\n💡 Use `get_event_details('{event_id}')` for full event details."
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Create smart event failed: {e}")
+            return f"❌ **Error creating event**: {str(e)}"
+
+    def search_calendar_events(self, query: str, days_back: int = 30, days_ahead: int = 30, 
+                              calendar_names: Optional[str] = None) -> str:
+        """
+        Search for events across calendars using text query
+        
+        Args:
+            query: Search query (searches title, description, location)
+            days_back: Days to look back (default 30)
+            days_ahead: Days to look ahead (default 30)  
+            calendar_names: Comma-separated calendar names to filter (optional)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            # Calculate time range
+            now = datetime.now()
+            time_min = (now - timedelta(days=days_back)).isoformat() + 'Z'
+            time_max = (now + timedelta(days=days_ahead)).isoformat() + 'Z'
+            
+            self.log_debug(f"Searching events for '{query}' from {time_min} to {time_max}")
+
+            # Get calendar list
+            calendar_list = service.calendarList().list().execute()
+            calendars = calendar_list.get('items', [])
+            
+            if not calendars:
+                return "📅 **No calendars found**. Please check your Google Calendar access."
+
+            # Filter calendars if names specified
+            selected_calendars = []
+            if calendar_names:
+                filter_names = [name.strip().lower() for name in calendar_names.split(',')]
+                for calendar in calendars:
+                    calendar_name = calendar.get('summary', '').lower()
+                    if any(filter_name in calendar_name for filter_name in filter_names):
+                        selected_calendars.append(calendar)
+            else:
+                selected_calendars = [cal for cal in calendars if cal.get('selected', True)]
+            
+            if not selected_calendars:
+                filter_msg = f" matching '{calendar_names}'" if calendar_names else ""
+                return f"📅 **No calendars found{filter_msg}**. Use `get_calendars()` to see available calendars."
+
+            # Search across selected calendars
+            matching_events = []
+            query_lower = query.lower()
+            
+            for calendar in selected_calendars:
+                calendar_id = calendar['id']
+                calendar_name = calendar.get('summary', 'Unknown')
+                
+                try:
+                    # Get events from this calendar
+                    events_result = service.events().list(
+                        calendarId=calendar_id,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        maxResults=100,  # Higher limit for search
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+                    
+                    events = events_result.get('items', [])
+                    
+                    for event in events:
+                        # Search in title, description, and location
+                        title = event.get('summary', '').lower()
+                        description = event.get('description', '').lower()
+                        location = event.get('location', '').lower()
+                        
+                        if (query_lower in title or 
+                            query_lower in description or 
+                            query_lower in location):
+                            
+                            # Add calendar context
+                            event['_calendar_name'] = calendar_name
+                            event['_calendar_id'] = calendar_id
+                            event['_match_score'] = self._calculate_match_score(query_lower, title, description, location)
+                            matching_events.append(event)
+                        
+                except Exception as e:
+                    self.log_error(f"Failed to search calendar '{calendar_name}': {e}")
+                    continue
+
+            if not matching_events:
+                calendar_list = ', '.join([cal.get('summary', 'Unknown') for cal in selected_calendars])
+                return f"🔍 **No events found** matching '{query}' in the last {days_back} days and next {days_ahead} days.\n**Searched calendars**: {calendar_list}"
+
+            # Sort by relevance (match score) then by time
+            matching_events.sort(key=lambda x: (-x.get('_match_score', 0), x.get('start', {}).get('dateTime', x.get('start', {}).get('date', ''))))
+
+            # Format response
+            response = f"🔍 **Search Results** for '{query}' ({len(matching_events)} found):\n\n"
+            
+            for i, event in enumerate(matching_events[:15], 1):  # Limit to 15 results
+                title = event.get('summary', 'No Title')
+                calendar_name = event.get('_calendar_name', 'Unknown Calendar')
+                event_id = event.get('id', 'Unknown ID')
+                
+                # Parse time
+                start = event.get('start', {})
+                if 'dateTime' in start:
+                    start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                    time_str = start_time.strftime("%a %d/%m, %H:%M")
+                elif 'date' in start:
+                    start_date = datetime.fromisoformat(start['date'])
+                    time_str = start_date.strftime("%a %d/%m (All day)")
+                else:
+                    time_str = "Time unknown"
+                
+                # Show match context
+                description = event.get('description', '')
+                location = event.get('location', '')
+                match_context = []
+                
+                if query_lower in title.lower():
+                    match_context.append("title")
+                if query_lower in description.lower():
+                    match_context.append("description") 
+                if query_lower in location.lower():
+                    match_context.append("location")
+                    
+                context_str = f" • Match: {', '.join(match_context)}" if match_context else ""
+                
+                response += f"{i}. **{title}**\n"
+                response += f"   📅 {time_str} • {calendar_name}{context_str}\n"
+                response += f"   ID: `{event_id}`\n\n"
+
+            if len(matching_events) > 15:
+                response += f"... and {len(matching_events) - 15} more results\n\n"
+                
+            response += "💡 Use `get_event_details('event_id')` for full details of any event."
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Search calendar events failed: {e}")
+            return f"❌ **Error searching events**: {str(e)}"
+
+    def _calculate_match_score(self, query: str, title: str, description: str, location: str) -> float:
+        """Calculate relevance score for search results"""
+        score = 0.0
+        
+        # Title matches are most important
+        if query in title:
+            score += 10.0 * (len(query) / len(title)) if title else 0
+            
+        # Description matches
+        if query in description:
+            score += 5.0 * (len(query) / len(description)) if description else 0
+            
+        # Location matches  
+        if query in location:
+            score += 3.0 * (len(query) / len(location)) if location else 0
+            
+        return score
+
+    def get_todays_schedule(self) -> str:
+        """
+        Get today's schedule with imminent event warnings for daily briefings
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            # Calculate today's time range
+            now = datetime.now()
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            time_min = start_of_day.isoformat() + 'Z'
+            time_max = end_of_day.isoformat() + 'Z'
+            
+            self.log_debug(f"Getting today's schedule from {time_min} to {time_max}")
+
+            # Get calendar list
+            calendar_list = service.calendarList().list().execute()
+            calendars = calendar_list.get('items', [])
+            
+            if not calendars:
+                return "📅 **No calendars found**. Please check your Google Calendar access."
+
+            # Get events from all visible calendars
+            all_events = []
+            
+            for calendar in calendars:
+                if not calendar.get('selected', True):
+                    continue  # Skip hidden calendars
+                    
+                calendar_id = calendar['id']
+                calendar_name = calendar.get('summary', 'Unknown')
+                
+                try:
+                    events_result = service.events().list(
+                        calendarId=calendar_id,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        maxResults=50,
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+                    
+                    events = events_result.get('items', [])
+                    
+                    for event in events:
+                        event['_calendar_name'] = calendar_name
+                        event['_calendar_id'] = calendar_id
+                        all_events.append(event)
+                        
+                except Exception as e:
+                    self.log_error(f"Failed to get today's events from '{calendar_name}': {e}")
+                    continue
+
+            if not all_events:
+                return f"📅 **Today's Schedule** ({now.strftime('%A, %d %B %Y')}):\n\n🎉 **No events scheduled for today!** Enjoy your free day!"
+
+            # Sort events by start time
+            all_events.sort(key=lambda x: x.get('start', {}).get('dateTime', x.get('start', {}).get('date', '')))
+
+            # Categorize events
+            past_events = []
+            current_events = []
+            imminent_events = []  # Within next hour
+            upcoming_events = []
+            all_day_events = []
+            
+            for event in all_events:
+                start = event.get('start', {})
+                end = event.get('end', {})
+                
+                if 'date' in start:
+                    # All-day event
+                    all_day_events.append(event)
+                elif 'dateTime' in start:
+                    # Timed event
+                    start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                    end_time = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00')) if 'dateTime' in end else start_time
+                    
+                    if end_time <= now:
+                        past_events.append(event)
+                    elif start_time <= now <= end_time:
+                        current_events.append(event)
+                    elif start_time <= now + timedelta(hours=1):
+                        imminent_events.append(event)
+                    else:
+                        upcoming_events.append(event)
+
+            # Build response
+            response = f"📅 **Today's Schedule** ({now.strftime('%A, %d %B %Y')}):\n\n"
+            
+            # Current events (most important)
+            if current_events:
+                response += "🔴 **HAPPENING NOW**:\n"
+                for event in current_events:
+                    title = event.get('summary', 'No Title')
+                    calendar_name = event.get('_calendar_name', 'Unknown')
+                    start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+                    end_time = datetime.fromisoformat(event['end']['dateTime'].replace('Z', '+00:00'))
+                    response += f"• **{title}** ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}) • {calendar_name}\n"
+                response += "\n"
+            
+            # Imminent events (urgent)
+            if imminent_events:
+                response += "⚠️ **STARTING SOON** (within 1 hour):\n"
+                for event in imminent_events:
+                    title = event.get('summary', 'No Title')
+                    calendar_name = event.get('_calendar_name', 'Unknown')
+                    start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+                    time_until = start_time - now
+                    minutes_until = int(time_until.total_seconds() / 60)
+                    response += f"• **{title}** in {minutes_until} minutes ({start_time.strftime('%H:%M')}) • {calendar_name}\n"
+                response += "\n"
+            
+            # All-day events
+            if all_day_events:
+                response += "📋 **ALL DAY**:\n"
+                for event in all_day_events:
+                    title = event.get('summary', 'No Title')
+                    calendar_name = event.get('_calendar_name', 'Unknown')
+                    response += f"• **{title}** • {calendar_name}\n"
+                response += "\n"
+                
+            # Remaining events
+            if upcoming_events:
+                response += "⏰ **UPCOMING**:\n"
+                for event in upcoming_events[:10]:  # Limit to avoid clutter
+                    title = event.get('summary', 'No Title')
+                    calendar_name = event.get('_calendar_name', 'Unknown')
+                    start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+                    end_time = datetime.fromisoformat(event['end']['dateTime'].replace('Z', '+00:00'))
+                    response += f"• **{title}** ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}) • {calendar_name}\n"
+                
+                if len(upcoming_events) > 10:
+                    response += f"... and {len(upcoming_events) - 10} more events\n"
+                response += "\n"
+            
+            # Summary
+            total_events = len(all_events)
+            completed_events = len(past_events)
+            remaining_events = total_events - completed_events
+            
+            response += f"📊 **Summary**: {total_events} events today • {completed_events} completed • {remaining_events} remaining\n"
+            
+            # Helpful tips
+            if imminent_events:
+                response += "\n💡 **Tip**: You have events starting soon - consider preparing now!"
+            elif not upcoming_events and not current_events:
+                response += "\n🎯 **Tip**: Rest of your day is free - great time for focused work!"
+                
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get today's schedule failed: {e}")
+            return f"❌ **Error getting today's schedule**: {str(e)}"
+
     def get_authentication_status(self) -> str:
         """Check current authentication status"""
         try:
@@ -1108,4 +1588,22 @@ def get_event_details(event_id: str, calendar_id: str = None) -> str:
     """Get full details of a specific event by ID"""
     tool = Tools()
     return tool.get_event_details(event_id, calendar_id)
+
+def create_event_smart(title: str, start_time: str, end_time: str = None, 
+                      calendar_hint: str = None, description: str = None, 
+                      location: str = None) -> str:
+    """Create an event with smart calendar selection"""
+    tool = Tools()
+    return tool.create_event_smart(title, start_time, end_time, calendar_hint, description, location)
+
+def search_calendar_events(query: str, days_back: int = 30, days_ahead: int = 30, 
+                          calendar_names: str = None) -> str:
+    """Search for events across calendars using text query"""
+    tool = Tools()
+    return tool.search_calendar_events(query, days_back, days_ahead, calendar_names)
+
+def get_todays_schedule() -> str:
+    """Get today's schedule with imminent event warnings for daily briefings"""
+    tool = Tools()
+    return tool.get_todays_schedule()
       

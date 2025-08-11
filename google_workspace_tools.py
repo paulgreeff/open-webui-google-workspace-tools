@@ -1,6 +1,6 @@
 """
-Google Gmail Tool for Open-WebUI
-Provides intelligent Gmail access with streamlined authentication
+Google Workspace Tools for Open-WebUI
+Comprehensive Google Workspace integration enabling AI assistants to manage Gmail, Calendar, Drive, and more
 """
 
 import os
@@ -26,7 +26,7 @@ except ImportError as e:
     logging.error(f"Google API libraries not available: {e}")
 
 class Tools:
-    """Google Gmail Integration Tool for Open-WebUI"""
+    """Google Workspace Integration Tool for Open-WebUI"""
     
     def __init__(self):
         self.valves = self.Valves()
@@ -36,7 +36,7 @@ class Tools:
         self.ensure_directories()
         
     class Valves(BaseModel):
-        """Configuration settings for Google Gmail Tool"""
+        """Configuration settings for Google Workspace Tools"""
         
         # Authentication Settings
         credentials_json: str = Field(
@@ -76,6 +76,27 @@ class Tools:
             description="Maximum characters of email content to return (prevent token overflow)"
         )
         
+        # Calendar Settings
+        user_timezone: str = Field(
+            default="Europe/London",
+            description="Your timezone (e.g., Europe/London, America/New_York, Asia/Tokyo). Used for event creation and display."
+        )
+        
+        default_event_duration_hours: int = Field(
+            default=1,
+            description="Default duration in hours for events when not specified"
+        )
+        
+        max_event_description_chars: int = Field(
+            default=300,
+            description="Maximum characters in event descriptions before truncation"
+        )
+        
+        default_calendar_name: str = Field(
+            default="",
+            description="Name of your default calendar for event creation (leave empty for primary calendar)"
+        )
+        
         # Debug Settings
         debug_mode: bool = Field(
             default=False,
@@ -93,18 +114,18 @@ class Tools:
         try:
             os.makedirs(self.google_dir, exist_ok=True)
             if self.valves.debug_mode:
-                self.log_debug(f"Google tools directory ensured: {self.google_dir}")
+                self.log_debug(f"Google Workspace tools directory ensured: {self.google_dir}")
         except Exception as e:
             self.log_error(f"Failed to create directories: {e}")
 
     def log_debug(self, message: str):
         """Debug logging when enabled"""
         if self.valves.debug_mode:
-            print(f"[Google Tools Debug] {message}")
+            print(f"[Google Workspace Tools Debug] {message}")
 
     def log_error(self, message: str):
         """Error logging"""
-        print(f"[Google Tools Error] {message}")
+        print(f"[Google Workspace Tools Error] {message}")
 
     def get_credentials_path(self) -> str:
         """Get path for credentials file"""
@@ -671,17 +692,17 @@ Then click this function again to continue setup.
 
 # Available functions for the LLM to call
 def setup_authentication() -> str:
-    """Start Google authentication setup process"""
+    """Start Google Workspace authentication setup process"""
     tool = Tools()
     return tool.setup_authentication()
 
 def complete_authentication() -> str:
-    """Complete Google authentication with auth code"""
+    """Complete Google Workspace authentication with auth code"""
     tool = Tools()
     return tool.complete_authentication()
 
 def get_authentication_status() -> str:
-    """Check current Google authentication status"""
+    """Check current Google Workspace authentication status"""
     tool = Tools()
     return tool.get_authentication_status()
 

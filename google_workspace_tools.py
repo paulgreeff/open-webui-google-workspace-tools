@@ -56,7 +56,7 @@ class Tools:
         
         # Feature Configuration
         enabled_services: str = Field(
-            default="gmail",
+            default="gmail,calendar",
             description="Enabled Google services (comma-separated): gmail,calendar,drive,tasks"
         )
         
@@ -670,6 +670,329 @@ Then click this function again to continue setup.
             self.log_error(f"Create draft failed: {e}")
             return f"❌ **Error creating draft**: {str(e)}"
 
+    def get_calendars(self) -> str:
+        """
+        List all available calendars with read/write status
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            self.log_debug("Fetching calendar list")
+
+            # Get calendar list
+            calendar_list = service.calendarList().list().execute()
+            calendars = calendar_list.get('items', [])
+            
+            if not calendars:
+                return "📅 **No calendars found**. Please check your Google Calendar access."
+
+            response = f"📅 **Available Calendars** ({len(calendars)} found):\n\n"
+            
+            for i, calendar in enumerate(calendars, 1):
+                calendar_id = calendar.get('id', 'Unknown ID')
+                calendar_name = calendar.get('summary', 'Unnamed Calendar')
+                access_role = calendar.get('accessRole', 'unknown')
+                is_primary = calendar.get('primary', False)
+                selected = calendar.get('selected', True)
+                
+                # Determine access level
+                if access_role == 'owner':
+                    access_icon = "👑"
+                    access_desc = "Owner"
+                elif access_role == 'writer':
+                    access_icon = "✏️"
+                    access_desc = "Read/Write"
+                elif access_role == 'reader':
+                    access_icon = "👁️"
+                    access_desc = "Read-only"
+                else:
+                    access_icon = "❓"
+                    access_desc = "Unknown access"
+                
+                # Primary calendar indicator
+                primary_indicator = " (PRIMARY)" if is_primary else ""
+                selected_indicator = "" if selected else " (Hidden)"
+                
+                response += f"{i}. {access_icon} **{calendar_name}**{primary_indicator}{selected_indicator}\n"
+                response += f"   Access: {access_desc}\n"
+                response += f"   ID: `{calendar_id}`\n\n"
+
+            response += "💡 **Usage Tips:**\n"
+            response += "- Use calendar names in `create_event_smart()` for easy event creation\n"
+            response += "- Read-only calendars (👁️) cannot be modified\n"
+            response += "- Primary calendar is your default Google Calendar"
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get calendars failed: {e}")
+            return f"❌ **Error getting calendars**: {str(e)}"
+
+    def get_upcoming_events(self, days_ahead: int = 7, calendar_names: Optional[str] = None) -> str:
+        """
+        Get upcoming events from specified calendars or all calendars
+        
+        Args:
+            days_ahead: Number of days ahead to look for events
+            calendar_names: Comma-separated calendar names to filter (optional)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            # Calculate time range
+            now = datetime.now()
+            end_time = now + timedelta(days=days_ahead)
+            
+            # Format as RFC3339 timestamp
+            time_min = now.isoformat() + 'Z'
+            time_max = end_time.isoformat() + 'Z'
+            
+            self.log_debug(f"Getting events from {time_min} to {time_max}")
+
+            # Get calendar list first
+            calendar_list = service.calendarList().list().execute()
+            calendars = calendar_list.get('items', [])
+            
+            if not calendars:
+                return "📅 **No calendars found**. Please check your Google Calendar access."
+
+            # Filter calendars if names specified
+            selected_calendars = []
+            if calendar_names:
+                filter_names = [name.strip().lower() for name in calendar_names.split(',')]
+                for calendar in calendars:
+                    calendar_name = calendar.get('summary', '').lower()
+                    if any(filter_name in calendar_name for filter_name in filter_names):
+                        selected_calendars.append(calendar)
+            else:
+                selected_calendars = [cal for cal in calendars if cal.get('selected', True)]
+            
+            if not selected_calendars:
+                filter_msg = f" matching '{calendar_names}'" if calendar_names else ""
+                return f"📅 **No calendars found{filter_msg}**. Use `get_calendars()` to see available calendars."
+
+            # Collect events from all selected calendars
+            all_events = []
+            
+            for calendar in selected_calendars:
+                calendar_id = calendar['id']
+                calendar_name = calendar.get('summary', 'Unknown')
+                
+                try:
+                    # Get events for this calendar
+                    events_result = service.events().list(
+                        calendarId=calendar_id,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        maxResults=50,  # Reasonable limit per calendar
+                        singleEvents=True,
+                        orderBy='startTime'
+                    ).execute()
+                    
+                    events = events_result.get('items', [])
+                    
+                    for event in events:
+                        # Add calendar context to each event
+                        event['_calendar_name'] = calendar_name
+                        event['_calendar_id'] = calendar_id
+                        all_events.append(event)
+                        
+                except Exception as e:
+                    self.log_error(f"Failed to get events from calendar '{calendar_name}': {e}")
+                    continue
+
+            if not all_events:
+                calendar_list = ', '.join([cal.get('summary', 'Unknown') for cal in selected_calendars])
+                return f"📅 **No upcoming events** in the next {days_ahead} days.\n**Searched calendars**: {calendar_list}"
+
+            # Sort all events by start time
+            all_events.sort(key=lambda x: x.get('start', {}).get('dateTime', x.get('start', {}).get('date', '')))
+
+            # Format response with basic info (tiered approach)
+            response = f"📅 **Upcoming Events** (next {days_ahead} days, {len(all_events)} found):\n\n"
+            
+            for i, event in enumerate(all_events[:20], 1):  # Limit to 20 events
+                title = event.get('summary', 'No Title')
+                calendar_name = event.get('_calendar_name', 'Unknown Calendar')
+                event_id = event.get('id', 'Unknown ID')
+                
+                # Parse start time
+                start = event.get('start', {})
+                if 'dateTime' in start:
+                    # Timed event
+                    start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                    time_str = start_time.strftime("%a %d/%m, %H:%M")
+                elif 'date' in start:
+                    # All-day event
+                    start_date = datetime.fromisoformat(start['date'])
+                    time_str = start_date.strftime("%a %d/%m (All day)")
+                else:
+                    time_str = "Time unknown"
+                
+                # Attendee count
+                attendees = event.get('attendees', [])
+                attendee_count = len(attendees) if attendees else 0
+                attendee_str = f" • {attendee_count} attendees" if attendee_count > 0 else ""
+                
+                response += f"{i}. **{title}**\n"
+                response += f"   📅 {time_str} • {calendar_name}{attendee_str}\n"
+                response += f"   ID: `{event_id}`\n\n"
+
+            if len(all_events) > 20:
+                response += f"... and {len(all_events) - 20} more events\n\n"
+                
+            response += "💡 Use `get_event_details('event_id')` to see full details of any event."
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get upcoming events failed: {e}")
+            return f"❌ **Error getting upcoming events**: {str(e)}"
+
+    def get_event_details(self, event_id: str, calendar_id: Optional[str] = None) -> str:
+        """
+        Get full details of a specific event
+        
+        Args:
+            event_id: Google Calendar event ID
+            calendar_id: Optional calendar ID (will search all calendars if not provided)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('calendar', 'v3')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Getting details for event: {event_id}")
+
+            event = None
+            found_calendar_name = None
+            
+            if calendar_id:
+                # Try the specific calendar
+                try:
+                    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+                    # Get calendar name
+                    calendar_info = service.calendars().get(calendarId=calendar_id).execute()
+                    found_calendar_name = calendar_info.get('summary', 'Unknown Calendar')
+                except Exception as e:
+                    self.log_debug(f"Event not found in specified calendar {calendar_id}: {e}")
+            else:
+                # Search all calendars
+                calendar_list = service.calendarList().list().execute()
+                calendars = calendar_list.get('items', [])
+                
+                for calendar in calendars:
+                    try:
+                        event = service.events().get(calendarId=calendar['id'], eventId=event_id).execute()
+                        found_calendar_name = calendar.get('summary', 'Unknown Calendar')
+                        break
+                    except Exception:
+                        continue
+
+            if not event:
+                return f"❌ **Event not found**: `{event_id}`. Please check the event ID or calendar access."
+
+            # Extract comprehensive event details
+            title = event.get('summary', 'No Title')
+            description = event.get('description', '')
+            location = event.get('location', '')
+            status = event.get('status', 'confirmed')
+            
+            # Time information
+            start = event.get('start', {})
+            end = event.get('end', {})
+            
+            if 'dateTime' in start and 'dateTime' in end:
+                # Timed event
+                start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00'))
+                time_str = f"{start_time.strftime('%A, %d %B %Y at %H:%M')} - {end_time.strftime('%H:%M')}"
+                duration = end_time - start_time
+                duration_str = f"Duration: {duration}"
+            elif 'date' in start:
+                # All-day event
+                start_date = datetime.fromisoformat(start['date'])
+                if 'date' in end:
+                    end_date = datetime.fromisoformat(end['date']) - timedelta(days=1)  # End date is exclusive
+                    if start_date == end_date:
+                        time_str = f"{start_date.strftime('%A, %d %B %Y')} (All day)"
+                    else:
+                        time_str = f"{start_date.strftime('%A, %d %B %Y')} - {end_date.strftime('%A, %d %B %Y')} (All day)"
+                else:
+                    time_str = f"{start_date.strftime('%A, %d %B %Y')} (All day)"
+                duration_str = "All day event"
+            else:
+                time_str = "Time unknown"
+                duration_str = "Duration unknown"
+
+            # Attendees information
+            attendees = event.get('attendees', [])
+            organizer = event.get('organizer', {})
+            
+            # Creator information
+            creator = event.get('creator', {})
+            created = event.get('created', '')
+            updated = event.get('updated', '')
+
+            # Build detailed response
+            response = f"📅 **Event Details**\n\n"
+            response += f"**Title**: {title}\n"
+            response += f"**Calendar**: {found_calendar_name}\n"
+            response += f"**Time**: {time_str}\n"
+            response += f"**{duration_str}**\n"
+            response += f"**Status**: {status.title()}\n\n"
+
+            if location:
+                response += f"**📍 Location**: {location}\n\n"
+
+            if description:
+                # Truncate description if too long
+                if len(description) > self.valves.max_event_description_chars:
+                    truncated_desc = description[:self.valves.max_event_description_chars] + "..."
+                    response += f"**📝 Description**: {truncated_desc}\n\n"
+                    response += f"*[Description truncated at {self.valves.max_event_description_chars} characters]*\n\n"
+                else:
+                    response += f"**📝 Description**: {description}\n\n"
+
+            # Organizer
+            if organizer:
+                organizer_name = organizer.get('displayName', organizer.get('email', 'Unknown'))
+                response += f"**👤 Organizer**: {organizer_name}\n"
+
+            # Attendees
+            if attendees:
+                response += f"**👥 Attendees** ({len(attendees)}):\n"
+                for attendee in attendees[:10]:  # Limit to 10 attendees
+                    name = attendee.get('displayName', attendee.get('email', 'Unknown'))
+                    status = attendee.get('responseStatus', 'needsAction')
+                    status_emoji = {
+                        'accepted': '✅',
+                        'declined': '❌', 
+                        'tentative': '❓',
+                        'needsAction': '⏳'
+                    }.get(status, '❓')
+                    response += f"  {status_emoji} {name}\n"
+                
+                if len(attendees) > 10:
+                    response += f"  ... and {len(attendees) - 10} more attendees\n"
+                response += "\n"
+
+            # Metadata
+            if creator.get('email'):
+                response += f"**Created by**: {creator.get('displayName', creator.get('email'))}\n"
+            
+            response += f"**Event ID**: `{event_id}`\n"
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get event details failed: {e}")
+            return f"❌ **Error getting event details**: {str(e)}"
+
     def get_authentication_status(self) -> str:
         """Check current authentication status"""
         try:
@@ -769,4 +1092,20 @@ def create_draft_reply(message_id: str, body: str) -> str:
     except Exception as e:
         tool.log_error(f"Create draft reply failed: {e}")
         return f"❌ **Error creating reply draft**: {str(e)}"
+
+# Calendar functions
+def get_calendars() -> str:
+    """List all available calendars with read/write status"""
+    tool = Tools()
+    return tool.get_calendars()
+
+def get_upcoming_events(days_ahead: int = 7, calendar_names: str = None) -> str:
+    """Get upcoming events from specified calendars or all calendars"""
+    tool = Tools()
+    return tool.get_upcoming_events(days_ahead, calendar_names)
+
+def get_event_details(event_id: str, calendar_id: str = None) -> str:
+    """Get full details of a specific event by ID"""
+    tool = Tools()
+    return tool.get_event_details(event_id, calendar_id)
       

@@ -66,6 +66,7 @@ python test_framework.py  # Framework setup test
 - **`test_gmail.py`** - Gmail API function tests
 - **`test_calendar.py`** - Calendar API function tests
 - **`test_contacts.py`** - Contacts API function tests
+- **`test_tasks.py`** - Tasks API function tests
 
 ### Configuration Files
 - **`credentials.json`** - Your Google Cloud OAuth2 credentials (you create this)
@@ -98,6 +99,20 @@ python test_framework.py  # Framework setup test
 ✅ **create_contact()** - Create new contacts with duplicate detection
 ✅ **duplicate_detection()** - Test contact creation duplicate prevention
 
+### Tasks Tests
+✅ **get_task_lists()** - List all available task lists
+✅ **create_task_list()** - Create new task lists
+✅ **update_task_list()** - Update task list names
+✅ **delete_task_list()** - Delete task lists (with warning)
+✅ **clear_completed_tasks()** - Clear completed tasks from lists
+✅ **get_tasks()** - Get tasks with filtering and hierarchy display
+✅ **create_task()** - Create tasks with due dates and hierarchy support
+✅ **create_task_with_smart_list_selection()** - Smart list selection for tasks
+✅ **update_task()** - Update task titles, notes, due dates, and status
+✅ **move_task()** - Move tasks and create task hierarchies
+✅ **delete_task()** - Delete tasks and their subtasks
+✅ **mark_task_complete()** - Mark tasks as completed
+
 ### Authentication Tests
 ✅ **get_authentication_status()** - Current auth status  
 ✅ **Token validation** - Automatic token refresh testing  
@@ -113,15 +128,16 @@ python test_runner.py
 # 1. 📧 Run Gmail Tests
 # 2. 📅 Run Calendar Tests
 # 3. 👥 Run Contacts Tests
-# 4. 🚀 Run All Tests
-# 5. 🔍 Individual Function Tests
-# 6. 📊 Authentication Status
+# 4. 📝 Run Tasks Tests
+# 5. 🚀 Run All Tests
+# 6. 🔍 Individual Function Tests
+# 7. 📊 Authentication Status
 ```
 
 ### Quick Test Run
 ```bash
 # Test everything
-python test_gmail.py && python test_calendar.py && python test_contacts.py
+python test_gmail.py && python test_calendar.py && python test_contacts.py && python test_tasks.py
 
 # Test specific function
 python -c "
@@ -153,6 +169,13 @@ result = tools.search_contacts("john", max_results=5)
 print(result)
 
 result = tools.lookup_contact_by_email("john@example.com")
+print(result)
+
+# Test task functions  
+result = tools.get_task_lists()
+print(result)
+
+result = tools.create_task_with_smart_list_selection("Test task", "Test notes", "tomorrow")
 print(result)
 ```
 

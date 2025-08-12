@@ -1,8 +1,8 @@
 # Open-WebUI Google Workspace Tools
 
-**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail and Calendar functionality.
+**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail, Calendar, and Contacts functionality.
 
-> ✅ **Status**: All Gmail and Calendar functions are working perfectly with proper timezone handling and cross-service automation.
+> ✅ **Status**: All Gmail, Calendar, and Contacts functions are fully tested and working perfectly with comprehensive Google Workspace integration.
 
 ## Features
 
@@ -25,6 +25,14 @@
 - **Daily briefings**: Get today's schedule with imminent event warnings
 - **Event search**: Find events across calendars with relevance scoring
 - **Free time analysis**: Identify gaps for scheduling new events
+
+### 👥 Contact Management
+- **Smart contact search**: Find contacts by name, email, phone, or organization
+- **Email-based lookup**: Instantly find contact details from email addresses
+- **Comprehensive contact details**: Access all contact fields including phone, organization, address
+- **Recent contacts**: View recently modified contacts with filtering
+- **Contact creation**: Add new contacts with duplicate detection
+- **Cross-service integration**: Seamless contact lookup when composing emails
 
 ### 🎯 AI-Powered Features
 - **Smart calendar selection**: "Add to family calendar" automatically finds the right calendar
@@ -49,6 +57,13 @@
 - `create_event_smart()` - Create events with AI calendar selection (timezone-aware)
 - `search_calendar_events()` - Search events with relevance ranking
 - `get_todays_schedule()` - Daily briefings with priority categorization (timezone-fixed)
+
+### Contacts Functions (Fully Tested ✅)
+- `search_contacts()` - Search contacts by name, email, phone, or organization
+- `lookup_contact_by_email()` - Find contact details by email address
+- `get_contact_details()` - Get comprehensive contact information by resource ID
+- `list_recent_contacts()` - List recently added or modified contacts
+- `create_contact()` - Create new contacts with duplicate detection
 
 ## Quick Start
 
@@ -87,6 +102,12 @@ get_calendars()
 get_upcoming_events(days_ahead=7, calendar_names="work,personal")
 create_event_smart("Team meeting", "tomorrow 2 PM", calendar_hint="work")
 get_todays_schedule()
+
+# Contact management
+search_contacts("John Smith", max_results=5)
+lookup_contact_by_email("john@company.com")
+list_recent_contacts(limit=10)
+create_contact("Jane Doe", "jane@example.com", phone="+1234567890")
 ```
 
 ## Use Cases
@@ -127,7 +148,7 @@ get_todays_schedule()
 The tool provides extensive customization through Open-WebUI settings:
 
 ### Authentication & Services
-- **enabled_services**: Comma-separated list (default: "gmail,calendar")
+- **enabled_services**: Comma-separated list (default: "gmail,calendar,contacts")
 - **credentials_json**: Your Google Cloud OAuth2 credentials
 - **auth_status**: Current authentication state (read-only)
 
@@ -141,6 +162,10 @@ The tool provides extensive customization through Open-WebUI settings:
 - **default_event_duration_hours**: Default event length (default: 1)
 - **max_event_description_chars**: Event description truncation (default: 300)
 - **default_calendar_name**: Preferred calendar for events (optional)
+
+### Contacts Settings
+- **max_contact_results**: Maximum contacts returned in searches (default: 10)
+- **contact_display_fields**: Default fields to show (default: "name,email")
 
 ### Advanced Options
 - **debug_mode**: Enable detailed logging for troubleshooting
@@ -181,11 +206,10 @@ Enable debug logging in tool settings to see detailed API interactions and error
 - **Google Drive**: File search, organization, and automated workflows
 - **Google Tasks**: Todo management and task automation  
 - **Google Docs/Sheets**: Document creation and spreadsheet automation
-- **Google Contacts**: Contact lookup and management
 - **Multi-user support**: Enterprise-ready user isolation and admin controls
 
 ### Future Integrations
-- **Cross-service automation**: Advanced workflows between Gmail, Calendar, and Drive
+- **Cross-service automation**: Advanced workflows between Gmail, Calendar, Contacts, and Drive
 - **AI-powered insights**: Intelligent analysis of communication patterns and schedule optimization
 - **Template systems**: Reusable workflows for common business processes
 

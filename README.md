@@ -259,7 +259,7 @@ Please report issues and feature requests through GitHub issues. Include:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+GNU General Public License v3.0 - see [LICENSE](LICENSE) file for details.
 
 ---
 

@@ -1,0 +1,19 @@
+# Credential files - NEVER commit these
+credentials.json
+token.json
+
+# Test output files
+test_results.txt
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temporary test files
+temp_*
+test_event_*.json
+
+# User-specific test data
+user_test_data/

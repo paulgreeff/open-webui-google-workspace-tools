@@ -1014,16 +1014,34 @@ Then click this function again to continue setup.
 
             self.log_debug(f"Creating smart event: {title}")
 
-            # Parse and validate times
+            # Parse and validate times with timezone awareness
             try:
                 from dateutil.parser import parse
+                import pytz
+                
+                # Get user timezone
+                try:
+                    user_tz = pytz.timezone(self.valves.user_timezone)
+                except:
+                    user_tz = pytz.UTC
+                    self.log_debug(f"Using UTC timezone (invalid timezone: {self.valves.user_timezone})")
+                
+                # Parse start time
                 start_dt = parse(start_time)
+                # If naive, localize to user timezone
+                if start_dt.tzinfo is None:
+                    start_dt = user_tz.localize(start_dt)
                 
                 if end_time:
                     end_dt = parse(end_time)
+                    # If naive, localize to user timezone
+                    if end_dt.tzinfo is None:
+                        end_dt = user_tz.localize(end_dt)
                 else:
                     # Use default duration
                     end_dt = start_dt + timedelta(hours=self.valves.default_event_duration_hours)
+                    
+                self.log_debug(f"Parsed times: {start_dt.isoformat()} to {end_dt.isoformat()}")
                     
             except ImportError:
                 return "❌ **Error**: dateutil library not available. Cannot parse dates."
@@ -1323,15 +1341,23 @@ Then click this function again to continue setup.
             if not service:
                 return auth_status
 
-            # Calculate today's time range
-            now = datetime.now()
+            # Get user timezone
+            import pytz
+            try:
+                user_tz = pytz.timezone(self.valves.user_timezone)
+            except:
+                user_tz = pytz.UTC
+                self.log_debug(f"Using UTC timezone (invalid timezone: {self.valves.user_timezone})")
+
+            # Calculate today's time range in user timezone
+            now = datetime.now(user_tz)
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
             
-            time_min = start_of_day.isoformat() + 'Z'
-            time_max = end_of_day.isoformat() + 'Z'
+            time_min = start_of_day.isoformat()
+            time_max = end_of_day.isoformat()
             
-            self.log_debug(f"Getting today's schedule from {time_min} to {time_max}")
+            self.log_debug(f"Getting today's schedule from {time_min} to {time_max} (timezone: {user_tz})")
 
             # Get calendar list
             calendar_list = service.calendarList().list().execute()
@@ -1392,15 +1418,30 @@ Then click this function again to continue setup.
                     # All-day event
                     all_day_events.append(event)
                 elif 'dateTime' in start:
-                    # Timed event
-                    start_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
-                    end_time = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00')) if 'dateTime' in end else start_time
+                    # Timed event - parse with timezone awareness
+                    start_dt_str = start['dateTime']
+                    end_dt_str = end.get('dateTime', start_dt_str)
                     
-                    if end_time <= now:
+                    # Parse datetime strings properly
+                    if start_dt_str.endswith('Z'):
+                        start_time = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00'))
+                    else:
+                        start_time = datetime.fromisoformat(start_dt_str)
+                    
+                    if end_dt_str.endswith('Z'):
+                        end_time = datetime.fromisoformat(end_dt_str.replace('Z', '+00:00'))
+                    else:
+                        end_time = datetime.fromisoformat(end_dt_str)
+                    
+                    # Convert to user timezone for comparison
+                    start_time_user = start_time.astimezone(user_tz)
+                    end_time_user = end_time.astimezone(user_tz)
+                    
+                    if end_time_user <= now:
                         past_events.append(event)
-                    elif start_time <= now <= end_time:
+                    elif start_time_user <= now <= end_time_user:
                         current_events.append(event)
-                    elif start_time <= now + timedelta(hours=1):
+                    elif start_time_user <= now + timedelta(hours=1):
                         imminent_events.append(event)
                     else:
                         upcoming_events.append(event)
@@ -1414,8 +1455,21 @@ Then click this function again to continue setup.
                 for event in current_events:
                     title = event.get('summary', 'No Title')
                     calendar_name = event.get('_calendar_name', 'Unknown')
-                    start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
-                    end_time = datetime.fromisoformat(event['end']['dateTime'].replace('Z', '+00:00'))
+                    
+                    # Parse and convert to user timezone for display
+                    start_dt_str = event['start']['dateTime']
+                    end_dt_str = event['end']['dateTime']
+                    
+                    if start_dt_str.endswith('Z'):
+                        start_time = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00')).astimezone(user_tz)
+                    else:
+                        start_time = datetime.fromisoformat(start_dt_str).astimezone(user_tz)
+                        
+                    if end_dt_str.endswith('Z'):
+                        end_time = datetime.fromisoformat(end_dt_str.replace('Z', '+00:00')).astimezone(user_tz)
+                    else:
+                        end_time = datetime.fromisoformat(end_dt_str).astimezone(user_tz)
+                        
                     response += f"• **{title}** ({start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}) • {calendar_name}\n"
                 response += "\n"
             
@@ -1425,7 +1479,14 @@ Then click this function again to continue setup.
                 for event in imminent_events:
                     title = event.get('summary', 'No Title')
                     calendar_name = event.get('_calendar_name', 'Unknown')
-                    start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+                    
+                    # Parse and convert to user timezone for display and calculation
+                    start_dt_str = event['start']['dateTime']
+                    if start_dt_str.endswith('Z'):
+                        start_time = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00')).astimezone(user_tz)
+                    else:
+                        start_time = datetime.fromisoformat(start_dt_str).astimezone(user_tz)
+                        
                     time_until = start_time - now
                     minutes_until = int(time_until.total_seconds() / 60)
                     response += f"• **{title}** in {minutes_until} minutes ({start_time.strftime('%H:%M')}) • {calendar_name}\n"

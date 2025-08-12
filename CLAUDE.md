@@ -2,9 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> ✅ **Current Status**: All Gmail and Calendar functions are fully working and production-ready with proper timezone handling.
+
 ## Project Overview
 
 This is a Google Workspace integration tool for Open-WebUI, providing AI assistants with Gmail, Calendar, and Google Drive functionality. The project consists of a single Python module (`google_workspace_tools.py`) that implements a comprehensive Google Workspace API integration.
+
+**Working Features:**
+- ✅ Gmail: Full email management (read, search, create drafts, reply)
+- ✅ Calendar: Complete calendar integration (events, scheduling, timezone-aware)
+- 🚧 Future: Drive, Tasks, Contacts (planned)
 
 ## Architecture
 

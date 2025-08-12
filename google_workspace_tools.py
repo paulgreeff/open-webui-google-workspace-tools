@@ -56,8 +56,8 @@ class Tools:
         
         # Feature Configuration
         enabled_services: str = Field(
-            default="gmail,calendar,contacts",
-            description="Enabled Google services (comma-separated): gmail,calendar,contacts,drive,tasks"
+            default="gmail,calendar,contacts,tasks",
+            description="Enabled Google services (comma-separated): gmail,calendar,contacts,tasks,drive"
         )
         
         # Gmail Settings
@@ -106,6 +106,27 @@ class Tools:
         contact_display_fields: str = Field(
             default="name,email",
             description="Default fields to display for contacts (comma-separated): name,email,phone,organization"
+        )
+        
+        # Tasks Settings
+        default_task_list_name: str = Field(
+            default="",
+            description="Name of your default task list for new tasks (leave empty for auto-detection)"
+        )
+        
+        max_task_results: int = Field(
+            default=20,
+            description="Maximum number of tasks to return in listings"
+        )
+        
+        task_display_fields: str = Field(
+            default="title,due_date,status,notes",
+            description="Default fields to display for tasks (comma-separated): title,due_date,status,notes"
+        )
+        
+        show_completed_tasks_default: bool = Field(
+            default=False,
+            description="Whether to show completed tasks by default in task listings"
         )
         
         # Debug Settings
@@ -2150,6 +2171,1535 @@ Then click this function again to continue setup.
             else:
                 return f"❌ **Error creating contact**: {error_str}"
 
+    # ========== TASKS FUNCTIONS ==========
+    
+    def _validate_task_list_id(self, list_id: str) -> tuple[str, str]:
+        """
+        Validate and potentially fix task list ID format issues
+        
+        Returns:
+            tuple: (actual_list_id, error_message) - error_message is empty if no error
+        """
+        self.log_debug(f"🔍 _validate_task_list_id() called with: '{list_id}'")
+        
+        if not list_id or not list_id.strip():
+            self.log_debug("❌ Empty or whitespace-only ID")
+            return "", "Task list ID cannot be empty"
+        
+        original_id = list_id.strip()
+        actual_list_id = original_id
+        
+        self.log_debug(f"📏 ID length: {len(original_id)} characters")
+        
+        # Check for common ID format issues
+        if len(original_id) > 100:
+            self.log_debug(f"❌ ID too long: {len(original_id)} chars")
+            return "", f"Task list ID is too long ({len(original_id)} characters). Expected a Google Tasks API ID (20-50 characters)."
+        
+        # Check if this looks like a base64-encoded ID or email-prefixed format
+        if '@' in original_id:
+            # Check if it's already in email-prefixed format (not base64 encoded)
+            if '-' in original_id:
+                email_part, list_part = original_id.split('-', 1)
+                if '@' in email_part:
+                    actual_list_id = list_part
+                    self.log_debug(f"Converted email-prefixed ID from '{original_id}' to '{actual_list_id}'")
+                    return actual_list_id, ""
+            else:
+                return "", f"Email-prefixed ID format not recognized. Expected format: email@domain.com-task_list_id"
+        
+        # Base64 decoding is no longer automatic - it will be handled as a fallback
+        # when the API call fails. Just validate that it's a reasonable ID.
+        self.log_debug(f"✅ Using task list ID as-is: '{original_id}'")
+        
+        # ID looks reasonable, use as-is
+        return actual_list_id, ""
+
+    def _looks_like_base64(self, text: str) -> bool:
+        """
+        Check if a string looks like it might be base64 encoded
+        """
+        # Base64 typically uses A-Z, a-z, 0-9, +, /, and = for padding
+        # But Google often uses URL-safe base64 which uses - and _ instead of + and /
+        import re
+        
+        # Must be reasonable length
+        if len(text) < 8 or len(text) > 100:
+            return False
+            
+        # Check if it contains characters typical of base64
+        base64_pattern = re.compile(r'^[A-Za-z0-9+/\-_]+={0,2}$')
+        if not base64_pattern.match(text):
+            return False
+            
+        # Additional heuristics: base64 strings are usually longer than typical IDs
+        # and have a mix of upper/lower case
+        has_upper = any(c.isupper() for c in text)
+        has_lower = any(c.islower() for c in text)
+        has_digits = any(c.isdigit() for c in text)
+        
+        # Should have a mix of character types
+        if not (has_upper and has_lower):
+            return False
+            
+        return True
+    
+    def _looks_like_google_api_id(self, text: str) -> bool:
+        """
+        Check if a string looks like a valid Google API ID
+        """
+        # Google API IDs typically:
+        # - Are 10-50 characters long
+        # - Contain alphanumeric characters and sometimes underscores/hyphens
+        # - Don't usually have spaces or special characters
+        import re
+        
+        if len(text) < 5 or len(text) > 100:
+            return False
+            
+        # Pattern for typical Google API IDs
+        api_id_pattern = re.compile(r'^[A-Za-z0-9_\-]+$')
+        if not api_id_pattern.match(text):
+            return False
+            
+        # Should contain some alphanumeric characters
+        has_alnum = any(c.isalnum() for c in text)
+        return has_alnum
+
+    def _validate_task_id(self, task_id: str) -> tuple[str, str]:
+        """
+        Validate and potentially fix task ID format issues
+        
+        Returns:
+            tuple: (actual_task_id, error_message) - error_message is empty if no error
+        """
+        self.log_debug(f"🔍 _validate_task_id() called with: '{task_id}'")
+        
+        if not task_id or not task_id.strip():
+            self.log_debug("❌ Empty or whitespace-only task ID")
+            return "", "Task ID cannot be empty"
+        
+        original_id = task_id.strip()
+        actual_task_id = original_id
+        
+        self.log_debug(f"📏 Task ID length: {len(original_id)} characters")
+        
+        # Check for common ID format issues
+        if len(original_id) > 100:
+            self.log_debug(f"❌ Task ID too long: {len(original_id)} chars")
+            return "", f"Task ID is too long ({len(original_id)} characters). Expected a Google Tasks API ID (10-50 characters)."
+        
+        # Base64 decoding is no longer automatic - it will be handled as a fallback
+        # when the API call fails. Just validate that it's a reasonable task ID.
+        self.log_debug(f"✅ Using task ID as-is: '{original_id}'")
+        
+        # ID looks reasonable, use as-is
+        return actual_task_id, ""
+
+    def get_task_lists(self) -> str:
+        """
+        List all task lists available to the user
+        """
+        try:
+            self.log_debug("🚀 get_task_lists() called")
+            
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                self.log_debug(f"❌ Authentication failed: {auth_status}")
+                return auth_status
+
+            self.log_debug("✅ Tasks service authenticated, fetching task lists...")
+
+            # Get all task lists
+            task_lists_result = service.tasklists().list().execute()
+            task_lists = task_lists_result.get('items', [])
+            
+            self.log_debug(f"📋 API returned {len(task_lists)} task lists")
+            if self.valves.debug_mode:
+                for i, tl in enumerate(task_lists):
+                    self.log_debug(f"  List {i+1}: '{tl.get('title', 'Unknown')}' (ID: {tl.get('id', 'Unknown')})")
+
+            if not task_lists:
+                self.log_debug("⚠️ No task lists found")
+                return "📋 **No task lists found**. You may need to create your first task list."
+
+            response = f"📋 **Task Lists** ({len(task_lists)} found):\n\n"
+            self.log_debug(f"✅ Returning task lists response to user")
+
+            for task_list in task_lists:
+                list_id = task_list.get('id', 'unknown')
+                title = task_list.get('title', 'Untitled')
+                updated = task_list.get('updated', '')
+                
+                # Format last updated time
+                updated_str = ""
+                if updated:
+                    try:
+                        # Convert ISO timestamp to readable format
+                        updated_str = f" (Updated: {updated[:10]})"
+                    except:
+                        pass
+                
+                response += f"• **{title}**{updated_str}\n"
+                response += f"  🔗 ID: `{list_id}`\n"
+
+            response += f"\n💡 **Tips**:\n"
+            response += f"• Use `get_tasks('list_id')` to view tasks in a specific list\n"
+            response += f"• Copy the exact ID from the 🔗 ID: line above (this is the raw Google Tasks API ID)\n"
+            response += f"• These IDs work directly with all task functions"
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get task lists failed: {e}")
+            return f"❌ **Error getting task lists**: {str(e)}"
+
+    def create_task_list(self, name: str, description: Optional[str] = None) -> str:
+        """
+        Create a new task list
+        
+        Args:
+            name: Name of the task list
+            description: Optional description (not supported by Google Tasks API currently)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Creating task list: {name}")
+
+            # Build task list data
+            task_list_data = {
+                'title': name
+            }
+            
+            # Note: Google Tasks API doesn't support descriptions for task lists
+
+            # Create the task list
+            task_list = service.tasklists().insert(body=task_list_data).execute()
+
+            if not task_list:
+                return f"❌ **Task list creation failed** for unknown reasons."
+
+            list_id = task_list.get('id', 'unknown')
+            title = task_list.get('title', name)
+            updated = task_list.get('updated', '')
+
+            response = f"✅ **Task list created successfully**!\n\n"
+            response += f"**Name**: {title}\n"
+            response += f"**List ID**: `{list_id}`\n"
+            
+            if updated:
+                response += f"**Created**: {updated[:10]}\n"
+            
+            response += f"\n💡 **Tip**: Use `create_task('{list_id}', 'Task title')` to add tasks to this list."
+
+            self.log_debug(f"Task list created successfully: {list_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Create task list failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to create task lists."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before creating more task lists."
+            elif "invalidArgument" in error_str:
+                return f"❌ **Invalid task list data**: Please check that the name is valid."
+            else:
+                return f"❌ **Error creating task list**: {error_str}"
+
+    def update_task_list(self, list_id: str, name: str) -> str:
+        """
+        Update the name of an existing task list
+        
+        Args:
+            list_id: ID of the task list to update
+            name: New name for the task list
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Updating task list: {list_id}")
+
+            # Get existing task list first
+            try:
+                existing_list = service.tasklists().get(tasklist=list_id).execute()
+            except Exception:
+                return f"❌ **Task list not found**: {list_id}"
+
+            # Build update data
+            update_data = {
+                'id': list_id,
+                'title': name
+            }
+
+            # Update the task list
+            updated_list = service.tasklists().update(tasklist=list_id, body=update_data).execute()
+
+            if not updated_list:
+                return f"❌ **Task list update failed** for unknown reasons."
+
+            old_title = existing_list.get('title', 'Unknown')
+            new_title = updated_list.get('title', name)
+            updated = updated_list.get('updated', '')
+
+            response = f"✅ **Task list updated successfully**!\n\n"
+            response += f"**Old Name**: {old_title}\n"
+            response += f"**New Name**: {new_title}\n"
+            response += f"**List ID**: `{list_id}`\n"
+            
+            if updated:
+                response += f"**Updated**: {updated[:10]}\n"
+
+            self.log_debug(f"Task list updated successfully: {list_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Update task list failed: {e}")
+            return f"❌ **Error updating task list**: {str(e)}"
+
+    def delete_task_list(self, list_id: str) -> str:
+        """
+        Delete a task list (WARNING: This will delete all tasks in the list!)
+        
+        Args:
+            list_id: ID of the task list to delete
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Deleting task list: {list_id}")
+
+            # Get task list info first for confirmation
+            try:
+                task_list = service.tasklists().get(tasklist=list_id).execute()
+                list_title = task_list.get('title', 'Unknown')
+            except Exception:
+                return f"❌ **Task list not found**: {list_id}"
+
+            # Delete the task list
+            service.tasklists().delete(tasklist=list_id).execute()
+
+            response = f"✅ **Task list deleted successfully**!\n\n"
+            response += f"**Deleted List**: {list_title}\n"
+            response += f"**List ID**: `{list_id}`\n"
+            response += f"\n⚠️ **Note**: All tasks in this list have been permanently deleted."
+
+            self.log_debug(f"Task list deleted successfully: {list_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Delete task list failed: {e}")
+            
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task list not found**: {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have permission to delete this task list."
+            else:
+                return f"❌ **Error deleting task list**: {error_str}"
+
+    def clear_completed_tasks(self, list_id: str) -> str:
+        """
+        Clear all completed tasks from a task list
+        
+        Args:
+            list_id: ID of the task list to clear completed tasks from
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Clearing completed tasks from list: {list_id}")
+            
+            # Validate task list ID format
+            actual_list_id, list_error = self._validate_task_list_id(list_id)
+            if list_error:
+                self.log_debug(f"❌ List ID validation failed: {list_error}")
+                return f"❌ **Invalid task list ID**: {list_error}"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted list ID from '{list_id}' to '{actual_list_id}'")
+
+            # Get task list info for confirmation
+            try:
+                self.log_debug(f"📋 Validating task list: {actual_list_id}")
+                task_list = service.tasklists().get(tasklist=actual_list_id).execute()
+                list_title = task_list.get('title', 'Unknown')
+                self.log_debug(f"✅ Task list found: '{list_title}'")
+            except Exception as e:
+                self.log_debug(f"❌ Task list not found: {e}")
+                return f"❌ **Task list not found**: {actual_list_id}"
+
+            # First, check how many completed tasks exist
+            try:
+                self.log_debug(f"🔍 Checking for completed tasks before clearing...")
+                completed_tasks = service.tasks().list(
+                    tasklist=actual_list_id,
+                    showCompleted=True,
+                    showHidden=True
+                ).execute()
+                
+                all_tasks = completed_tasks.get('items', [])
+                completed_count = len([task for task in all_tasks if task.get('status') == 'completed'])
+                self.log_debug(f"📊 Found {completed_count} completed tasks out of {len(all_tasks)} total tasks")
+                
+                if completed_count == 0:
+                    return f"ℹ️ **No completed tasks to clear** in list '{list_title}'"
+                    
+            except Exception as e:
+                self.log_debug(f"⚠️ Could not count completed tasks before clearing: {e}")
+
+            # Clear completed tasks
+            self.log_debug(f"🚀 Calling API to clear completed tasks from list: {actual_list_id}")
+            try:
+                service.tasks().clear(tasklist=actual_list_id).execute()
+                self.log_debug(f"✅ Clear completed tasks API call completed")
+                
+                # Verify the clear operation worked by checking the default view (without showHidden)
+                try:
+                    self.log_debug(f"🔍 Verifying completed tasks were cleared from default view...")
+                    after_clear_default = service.tasks().list(
+                        tasklist=actual_list_id,
+                        showCompleted=True,
+                        showHidden=False  # Default view - should not show cleared tasks
+                    ).execute()
+                    
+                    default_tasks = after_clear_default.get('items', [])
+                    default_completed = len([task for task in default_tasks if task.get('status') == 'completed'])
+                    self.log_debug(f"📊 After clearing (default view): {default_completed} completed tasks visible out of {len(default_tasks)} total")
+                    
+                    # Also check with showHidden=True to see hidden tasks
+                    after_clear_all = service.tasks().list(
+                        tasklist=actual_list_id,
+                        showCompleted=True,
+                        showHidden=True  # Should show cleared tasks as hidden
+                    ).execute()
+                    
+                    all_tasks = after_clear_all.get('items', [])
+                    hidden_completed = len([task for task in all_tasks if task.get('status') == 'completed' and task.get('hidden')])
+                    visible_completed = len([task for task in all_tasks if task.get('status') == 'completed' and not task.get('hidden')])
+                    
+                    self.log_debug(f"📊 After clearing (full view): {visible_completed} visible completed, {hidden_completed} hidden completed out of {len(all_tasks)} total")
+                    
+                    if default_completed == 0:
+                        self.log_debug(f"✅ Clear operation successful: completed tasks are hidden from default view")
+                    else:
+                        self.log_debug(f"⚠️ Warning: {default_completed} completed tasks still visible in default view")
+                    
+                except Exception as e:
+                    self.log_debug(f"⚠️ Could not verify clear operation: {e}")
+            except Exception as e:
+                error_msg = str(e)
+                self.log_debug(f"❌ Clear completed tasks API call failed: {error_msg}")
+                
+                # Try base64 decoding fallback if clear fails with invalid list ID
+                if "invalid" in error_msg.lower() or "not found" in error_msg.lower():
+                    self.log_debug(f"🔄 Trying base64 decoding fallback for clear completed tasks operation")
+                    
+                    # Try decoding list ID
+                    if self._looks_like_base64(list_id):
+                        try:
+                            import base64
+                            missing_padding = 4 - len(list_id) % 4
+                            test_id = list_id + ('=' * missing_padding if missing_padding != 4 else '')
+                            decoded_list_id = base64.b64decode(test_id).decode('utf-8')
+                            self.log_debug(f"🔓 Decoded list ID available: '{list_id}' -> '{decoded_list_id}'")
+                            
+                            # Try clear with decoded ID
+                            try:
+                                self.log_debug(f"🚀 Trying decoded list ID: {decoded_list_id}")
+                                service.tasks().clear(tasklist=decoded_list_id).execute()
+                                self.log_debug(f"✅ Clear completed tasks succeeded with decoded list ID!")
+                                # Update the ID for response
+                                actual_list_id = decoded_list_id
+                            except Exception as e2:
+                                self.log_debug(f"❌ Decoded list ID also failed: {e2}")
+                                return f"❌ **Clear completed tasks failed**: {error_msg}"
+                        except Exception:
+                            self.log_debug(f"🔓 Could not decode list ID: '{list_id}'")
+                            return f"❌ **Clear completed tasks failed**: {error_msg}"
+                    else:
+                        return f"❌ **Clear completed tasks failed**: {error_msg}"
+                else:
+                    return f"❌ **Clear completed tasks failed**: {error_msg}"
+
+            response = f"✅ **Completed tasks cleared successfully**!\n\n"
+            response += f"**Task List**: {list_title}\n"
+            response += f"**List ID**: `{list_id}`\n"
+            
+            # Add information about how many tasks were cleared if we have it
+            if 'completed_count' in locals():
+                response += f"**Tasks Cleared**: {completed_count} completed tasks\n"
+            
+            response += f"\n💡 **Note**: Completed tasks have been marked as 'hidden' and removed from the default view. They can still be viewed by enabling 'Show completed tasks' in Google Tasks. Active tasks remain unchanged."
+
+            self.log_debug(f"Completed tasks cleared successfully from: {list_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Clear completed tasks failed: {e}")
+            
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task list not found**: {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have permission to modify this task list."
+            else:
+                return f"❌ **Error clearing completed tasks**: {error_str}"
+
+    def get_tasks(self, list_id: str, show_completed: Optional[bool] = None, show_hidden: bool = False) -> str:
+        """
+        Get tasks from a specific task list with filtering options
+        
+        Args:
+            list_id: ID of the task list (must be the raw Google Tasks API ID)
+            show_completed: Whether to show completed tasks (None = use default setting)
+            show_hidden: Whether to show hidden tasks (default: False)
+        """
+        try:
+            self.log_debug(f"🚀 get_tasks() called with list_id='{list_id}', show_completed={show_completed}, show_hidden={show_hidden}")
+            
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                self.log_debug(f"❌ Authentication failed: {auth_status}")
+                return auth_status
+
+            # Use setting or parameter for show_completed
+            if show_completed is None:
+                show_completed = self.valves.show_completed_tasks_default
+                self.log_debug(f"📝 Using default show_completed setting: {show_completed}")
+            
+            # IMPORTANT: Google Tasks marks completed tasks as hidden, so if we want completed tasks,
+            # we also need to show hidden tasks unless explicitly told not to
+            if show_completed and not show_hidden:
+                show_hidden = True
+                self.log_debug(f"🔍 Auto-enabled show_hidden=True because show_completed=True (completed tasks are marked as hidden)")
+            
+            self.log_debug(f"🔍 Validating task list ID: '{list_id}'")
+
+            # Validate and fix ID format if needed
+            actual_list_id, id_error = self._validate_task_list_id(list_id)
+            if id_error:
+                self.log_debug(f"❌ ID validation failed: {id_error}")
+                return f"❌ **Invalid task list ID**: {id_error}\n\n" \
+                       f"**Troubleshooting**:\n" \
+                       f"• Run `get_task_lists()` to see available task lists\n" \
+                       f"• Copy the exact ID from the 🔗 ID: line\n" \
+                       f"• Make sure you're using the raw Google Tasks API ID\n\n" \
+                       f"**Provided ID**: `{list_id}`"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted ID from '{list_id}' to '{actual_list_id}'")
+
+            # Get task list info first
+            self.log_debug(f"📋 Fetching task list info for ID: {actual_list_id}")
+            try:
+                task_list = service.tasklists().get(tasklist=actual_list_id).execute()
+                list_title = task_list.get('title', 'Unknown')
+                self.log_debug(f"✅ Task list found: '{list_title}'")
+            except Exception as e:
+                error_msg = str(e)
+                self.log_debug(f"❌ Failed to get task list info: {error_msg}")
+                
+                # Try base64 decoding as fallback if original ID fails
+                if ("not found" in error_msg.lower() or "invalid" in error_msg.lower()) and self._looks_like_base64(list_id):
+                    self.log_debug(f"🔄 Trying base64 decoding fallback for ID: {list_id}")
+                    try:
+                        import base64
+                        missing_padding = 4 - len(list_id) % 4
+                        test_id = list_id + ('=' * missing_padding if missing_padding != 4 else '')
+                        decoded_id = base64.b64decode(test_id).decode('utf-8')
+                        self.log_debug(f"🔓 Base64 decoded: '{list_id}' -> '{decoded_id}'")
+                        
+                        # Try with decoded ID
+                        task_list = service.tasklists().get(tasklist=decoded_id).execute()
+                        list_title = task_list.get('title', 'Unknown')
+                        actual_list_id = decoded_id  # Update to use the decoded ID
+                        self.log_debug(f"✅ Task list found with decoded ID: '{list_title}'")
+                    except Exception as e2:
+                        self.log_debug(f"❌ Base64 fallback also failed: {e2}")
+                        if "not found" in error_msg.lower() or "invalid" in error_msg.lower():
+                            return f"❌ **Task list not found**: `{list_id}`\n\n" \
+                                   f"**Troubleshooting**:\n" \
+                                   f"• Run `get_task_lists()` to see available task lists\n" \
+                                   f"• Copy the exact ID from the 🔗 ID: line\n" \
+                                   f"• Make sure you're using the raw Google Tasks API ID, not a processed/encoded version\n\n" \
+                                   f"**Error details**: {error_msg}"
+                        else:
+                            return f"❌ **Error accessing task list**: {error_msg}"
+                else:
+                    if "not found" in error_msg.lower() or "invalid" in error_msg.lower():
+                        return f"❌ **Task list not found**: `{list_id}`\n\n" \
+                               f"**Troubleshooting**:\n" \
+                               f"• Run `get_task_lists()` to see available task lists\n" \
+                               f"• Copy the exact ID from the 🔗 ID: line\n" \
+                               f"• Make sure you're using the raw Google Tasks API ID, not a processed/encoded version\n\n" \
+                               f"**Error details**: {error_msg}"
+                    else:
+                        return f"❌ **Error accessing task list**: {error_msg}"
+
+            # Build task request parameters
+            max_results = self.valves.max_task_results
+            self.log_debug(f"📊 Request parameters: max_results={max_results}, showCompleted={show_completed}, showHidden={show_hidden}")
+            
+            # Get tasks from the list
+            self.log_debug(f"🔍 Fetching tasks from list '{list_title}' (ID: {actual_list_id})")
+            tasks_result = service.tasks().list(
+                tasklist=actual_list_id,
+                maxResults=max_results,
+                showCompleted=show_completed,
+                showHidden=show_hidden
+            ).execute()
+            
+            tasks = tasks_result.get('items', [])
+            self.log_debug(f"📝 API returned {len(tasks)} tasks")
+            
+            if self.valves.debug_mode and tasks:
+                for i, task in enumerate(tasks[:3]):  # Log first 3 tasks
+                    self.log_debug(f"  Task {i+1}: '{task.get('title', 'Untitled')}' (Status: {task.get('status', 'unknown')})")
+
+            if not tasks:
+                completed_note = " (including completed)" if show_completed else ""
+                return f"✅ **No tasks found** in '{list_title}'{completed_note}.\n\n💡 **Tip**: Use `create_task('{actual_list_id}', 'Task title')` to add your first task."
+
+            # Get display fields from settings
+            display_fields = [field.strip() for field in self.valves.task_display_fields.split(',')]
+            
+            # Count task types
+            active_count = sum(1 for task in tasks if task.get('status') != 'completed')
+            completed_count = len(tasks) - active_count
+
+            response = f"📝 **Tasks in '{list_title}'** ({len(tasks)} total"
+            if show_completed:
+                response += f" - {active_count} active, {completed_count} completed"
+            response += f"):\n\n"
+
+            # Group and display tasks with hierarchy support
+            for task in tasks:
+                task_info = []
+                task_id = task.get('id', 'unknown')
+                
+                # Title (with hierarchy indication)
+                if 'title' in display_fields:
+                    title = task.get('title', 'Untitled')
+                    parent = task.get('parent')
+                    
+                    # Add indentation for child tasks
+                    if parent:
+                        title = f"    ↳ {title}"
+                    
+                    # Mark completed tasks
+                    if task.get('status') == 'completed':
+                        title = f"~~{title}~~ ✓"
+                    
+                    task_info.append(f"**{title}**")
+                
+                # Due date
+                if 'due_date' in display_fields:
+                    due = task.get('due')
+                    if due:
+                        try:
+                            # Parse RFC 3339 date
+                            due_date = due[:10]  # Just the date part
+                            task_info.append(f"📅 Due: {due_date}")
+                        except:
+                            task_info.append(f"📅 Due: {due}")
+                
+                # Status
+                if 'status' in display_fields:
+                    status = task.get('status', 'needsAction')
+                    if status == 'completed':
+                        completed_date = task.get('completed', '')
+                        if completed_date:
+                            completed_str = completed_date[:10]
+                            task_info.append(f"✅ Completed: {completed_str}")
+                        else:
+                            task_info.append(f"✅ Completed")
+                    else:
+                        task_info.append(f"🔄 {status}")
+                
+                # Notes
+                if 'notes' in display_fields:
+                    notes = task.get('notes', '').strip()
+                    if notes:
+                        # Truncate long notes
+                        if len(notes) > 100:
+                            notes = notes[:97] + "..."
+                        task_info.append(f"📝 {notes}")
+                
+                # Task ID for reference
+                task_info.append(f"🔗 ID: `{task_id}`")
+                
+                if task_info:
+                    response += "• " + " • ".join(task_info) + "\n"
+
+            response += f"\n💡 **Tips**: \n"
+            response += f"• Use `create_task('{list_id}', 'title')` to add new tasks\n"
+            response += f"• Use `update_task('task_id', title='new title')` to modify tasks\n"
+            response += f"• Use `mark_task_complete('task_id')` to complete tasks"
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get tasks failed: {e}")
+            return f"❌ **Error getting tasks**: {str(e)}"
+
+    def create_task_with_smart_list_selection(self, title: str, notes: Optional[str] = None, 
+                                             due_date: Optional[str] = None, list_hint: Optional[str] = None,
+                                             parent_id: Optional[str] = None) -> str:
+        """
+        Create a task with smart list selection (similar to smart calendar selection)
+        
+        Args:
+            title: Task title
+            notes: Task notes (optional)
+            due_date: Due date in various formats (optional)
+            list_hint: Hint for task list selection (optional)
+            parent_id: Parent task ID for hierarchy (optional)
+        """
+        try:
+            self.log_debug(f"🚀 create_task_with_smart_list_selection() called with title='{title}', list_hint='{list_hint}', notes='{notes}', due_date='{due_date}', parent_id='{parent_id}'")
+            
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                self.log_debug(f"❌ Authentication failed: {auth_status}")
+                return auth_status
+
+            self.log_debug("✅ Tasks service authenticated")
+            self.log_debug(f"🎯 Starting smart list selection for task: {title}")
+
+            # Get all task lists for smart selection
+            self.log_debug("📋 Fetching all task lists for smart selection")
+            task_lists_result = service.tasklists().list().execute()
+            task_lists = task_lists_result.get('items', [])
+            
+            self.log_debug(f"📊 Found {len(task_lists)} task lists for selection")
+            if self.valves.debug_mode:
+                for i, tl in enumerate(task_lists):
+                    self.log_debug(f"  List {i+1}: '{tl.get('title', 'Unknown')}' (ID: {tl.get('id', 'Unknown')})")
+            
+            if not task_lists:
+                self.log_debug("❌ No task lists found")
+                return "❌ **No task lists found**. Please create a task list first using `create_task_list()`."
+
+            # Smart list selection logic
+            selected_list = None
+            
+            if list_hint:
+                self.log_debug(f"🔍 Smart matching with hint: '{list_hint}'")
+                # Try to find matching list by name (fuzzy matching)
+                hint_lower = list_hint.lower()
+                
+                # First try exact match
+                self.log_debug("🎯 Trying exact name match...")
+                for tl in task_lists:
+                    if tl.get('title', '').lower() == hint_lower:
+                        selected_list = tl
+                        self.log_debug(f"✅ Exact match found: '{tl.get('title')}'")
+                        break
+                
+                # Then try partial match
+                if not selected_list:
+                    self.log_debug("🔍 Trying partial name match...")
+                    for tl in task_lists:
+                        if hint_lower in tl.get('title', '').lower():
+                            selected_list = tl
+                            self.log_debug(f"✅ Partial match found: '{tl.get('title')}'")
+                            break
+                
+                if not selected_list:
+                    self.log_debug(f"⚠️ No match found for hint: '{list_hint}'")
+            
+            # If no hint or no match, use default list or first list
+            if not selected_list:
+                self.log_debug("🎯 No hint match, trying default task list from settings")
+                # Try to use default list from settings
+                default_name = self.valves.default_task_list_name.strip()
+                if default_name:
+                    self.log_debug(f"🔍 Looking for default list: '{default_name}'")
+                    for tl in task_lists:
+                        if default_name.lower() in tl.get('title', '').lower():
+                            selected_list = tl
+                            self.log_debug(f"✅ Default list found: '{tl.get('title')}'")
+                            break
+                
+                # Fall back to first list
+                if not selected_list:
+                    selected_list = task_lists[0]
+                    self.log_debug(f"📌 Using first available list: '{selected_list.get('title')}'")
+
+            list_id = selected_list.get('id')
+            list_title = selected_list.get('title', 'Unknown')
+            
+            self.log_debug(f"🎯 Final selection: '{list_title}' (ID: {list_id})")
+            
+            # Create the task using the selected list
+            self.log_debug(f"➡️ Delegating to create_task() with list_id={list_id}")
+            return self.create_task(list_id, title, notes, due_date, parent_id, list_title)
+
+        except Exception as e:
+            self.log_debug(f"❌ Smart task creation failed: {e}")
+            self.log_error(f"Smart task creation failed: {e}")
+            return f"❌ **Error creating task**: {str(e)}"
+
+    def create_task(self, list_id: str, title: str, notes: Optional[str] = None, 
+                   due_date: Optional[str] = None, parent_id: Optional[str] = None,
+                   list_title: Optional[str] = None) -> str:
+        """
+        Create a task in a specific task list
+        
+        Args:
+            list_id: ID of the task list
+            title: Task title
+            notes: Task notes (optional)
+            due_date: Due date in various formats (optional)
+            parent_id: Parent task ID for hierarchy (optional)
+            list_title: Task list title (for display, optional)
+        """
+        try:
+            self.log_debug(f"🚀 create_task() called with list_id='{list_id}', title='{title}', notes='{notes}', due_date='{due_date}', parent_id='{parent_id}'")
+            
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                self.log_debug(f"❌ Authentication failed: {auth_status}")
+                return auth_status
+
+            self.log_debug("✅ Tasks service authenticated")
+
+            # Validate and fix ID format if needed
+            self.log_debug(f"🔍 Validating task list ID: '{list_id}'")
+            actual_list_id, id_error = self._validate_task_list_id(list_id)
+            if id_error:
+                self.log_debug(f"❌ ID validation failed: {id_error}")
+                return f"❌ **Invalid task list ID**: {id_error}\n\n" \
+                       f"💡 **Tip**: Use `get_task_lists()` to see available task lists and copy the correct ID."
+
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted ID from '{list_id}' to '{actual_list_id}'")
+
+            self.log_debug(f"📝 Creating task '{title}' in list {actual_list_id}")
+
+            # Get task list info if not provided
+            if not list_title:
+                self.log_debug(f"📋 Fetching task list info for validation")
+                try:
+                    task_list = service.tasklists().get(tasklist=actual_list_id).execute()
+                    list_title = task_list.get('title', 'Unknown')
+                    self.log_debug(f"✅ Task list found: '{list_title}'")
+                except Exception as e:
+                    self.log_debug(f"❌ Failed to get task list info: {e}")
+                    return f"❌ **Task list not found**: {actual_list_id}"
+
+            # Validate parent_id if provided
+            actual_parent_id = None
+            if parent_id:
+                actual_parent_id, parent_error = self._validate_task_id(parent_id)
+                if parent_error:
+                    self.log_debug(f"❌ Parent task ID validation failed: {parent_error}")
+                    return f"❌ **Invalid parent task ID**: {parent_error}"
+                
+                if actual_parent_id != parent_id:
+                    self.log_debug(f"🔄 Converted parent task ID from '{parent_id}' to '{actual_parent_id}'")
+
+            # Build task data
+            self.log_debug(f"🛠️ Building task data structure")
+            task_data = {
+                'title': title
+            }
+            
+            # Add notes if provided
+            if notes:
+                task_data['notes'] = notes
+                self.log_debug(f"📝 Added notes: '{notes[:50]}{'...' if len(notes) > 50 else ''}'")
+            
+            # Add parent for hierarchy if provided
+            if actual_parent_id:
+                task_data['parent'] = actual_parent_id
+                self.log_debug(f"👨‍👩‍👧‍👦 Set parent task: {actual_parent_id}")
+            
+            # Parse and add due date if provided
+            if due_date:
+                self.log_debug(f"📅 Parsing due date: '{due_date}'")
+                try:
+                    # Use existing date parsing logic (import from calendar functions)
+                    parsed_date = self.parse_datetime_flexible(due_date)
+                    if parsed_date:
+                        # Google Tasks API expects RFC 3339 date format (date only, no time)
+                        due_date_str = parsed_date.strftime('%Y-%m-%dT00:00:00.000Z')
+                        task_data['due'] = due_date_str
+                        self.log_debug(f"✅ Due date parsed successfully: {due_date_str}")
+                    else:
+                        self.log_debug(f"⚠️ Due date parsing returned None")
+                except Exception as e:
+                    # If date parsing fails, continue without due date but warn user
+                    self.log_debug(f"❌ Date parsing failed for '{due_date}': {e}")
+
+            # Log the final task data structure
+            if self.valves.debug_mode:
+                self.log_debug(f"📦 Final task data: {task_data}")
+
+            # Create the task
+            self.log_debug(f"🚀 Calling Google Tasks API to create task in list {actual_list_id}")
+            task = service.tasks().insert(tasklist=actual_list_id, body=task_data).execute()
+            
+            self.log_debug(f"✅ Task created successfully! Task ID: {task.get('id', 'unknown')}")
+
+            if not task:
+                return f"❌ **Task creation failed** for unknown reasons."
+
+            task_id = task.get('id', 'unknown')
+            created_title = task.get('title', title)
+            updated = task.get('updated', '')
+            parent = task.get('parent')
+
+            response = f"✅ **Task created successfully**!\n\n"
+            response += f"**Title**: {created_title}\n"
+            response += f"**Task List**: {list_title}\n"
+            response += f"**Task ID**: `{task_id}`\n"
+            
+            if notes:
+                response += f"**Notes**: {notes[:100]}{'...' if len(notes) > 100 else ''}\n"
+            
+            if due_date and 'due' in task_data:
+                response += f"**Due Date**: {due_date}\n"
+            elif due_date:
+                response += f"**Due Date**: ⚠️ Could not parse '{due_date}' - use formats like 'tomorrow', '2024-01-15', or 'next Friday'\n"
+            
+            if parent:
+                response += f"**Parent Task**: {parent}\n"
+            
+            if updated:
+                response += f"**Created**: {updated[:10]}\n"
+
+            response += f"\n💡 **Tips**: \n"
+            response += f"• Use `update_task('{task_id}', title='new title')` to modify this task\n"
+            response += f"• Use `create_task('{list_id}', 'subtask title', parent_id='{task_id}')` to create subtasks"
+
+            self.log_debug(f"Task created successfully: {task_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_debug(f"❌ Task creation failed: {e}")
+            self.log_error(f"Create task failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task list not found**: {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to this task list."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before creating more tasks."
+            elif "invalidArgument" in error_str:
+                return f"❌ **Invalid task data**: Please check that the title and other fields are valid."
+            else:
+                return f"❌ **Error creating task**: {error_str}"
+
+    def update_task(self, list_id: str, task_id: str, title: Optional[str] = None, 
+                   notes: Optional[str] = None, due_date: Optional[str] = None, 
+                   status: Optional[str] = None) -> str:
+        """
+        Update an existing task
+        
+        Args:
+            list_id: ID of the task list containing the task
+            task_id: ID of the task to update
+            title: New title for the task
+            notes: New notes/description for the task
+            due_date: New due date in natural language or ISO format
+            status: Task status ('needsAction', 'completed')
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Updating task: {task_id} in list: {list_id}")
+            
+            # Validate task list ID format
+            actual_list_id, list_error = self._validate_task_list_id(list_id)
+            if list_error:
+                self.log_debug(f"❌ List ID validation failed: {list_error}")
+                return f"❌ **Invalid task list ID**: {list_error}"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted list ID from '{list_id}' to '{actual_list_id}'")
+
+            # Validate task ID format
+            actual_task_id, task_error = self._validate_task_id(task_id)
+            if task_error:
+                self.log_debug(f"❌ Task ID validation failed: {task_error}")
+                return f"❌ **Invalid task ID**: {task_error}"
+            
+            if actual_task_id != task_id:
+                self.log_debug(f"🔄 Converted task ID from '{task_id}' to '{actual_task_id}'")
+
+            # Add debugging for task ID
+            self.log_debug(f"📝 Task ID format: length={len(actual_task_id)}, contains_special_chars={'@' in actual_task_id or '=' in actual_task_id}")
+
+            # Get existing task first
+            try:
+                self.log_debug(f"🔍 Getting existing task with list_id={actual_list_id}, task_id={actual_task_id}")
+                existing_task = service.tasks().get(tasklist=actual_list_id, task=actual_task_id).execute()
+                self.log_debug(f"✅ Found task: '{existing_task.get('title', 'Untitled')}'")
+            except Exception as e:
+                self.log_debug(f"❌ Failed to get existing task: {e}")
+                return f"❌ **Task not found**: {task_id} in list {actual_list_id}\n**Error**: {str(e)}"
+
+            # Build update data - only include fields that are being changed
+            # IMPORTANT: Include the task ID in the request body (required for updates)
+            task_data = {
+                'id': actual_task_id
+            }
+            changes = []
+            
+            if title is not None:
+                task_data['title'] = title
+                changes.append(f"title to '{title}'")
+            
+            if notes is not None:
+                task_data['notes'] = notes
+                changes.append("notes")
+            
+            if status is not None:
+                if status.lower() in ['completed', 'complete', 'done']:
+                    task_data['status'] = 'completed'
+                    changes.append("status to completed")
+                elif status.lower() in ['needsaction', 'needs_action', 'pending', 'todo']:
+                    task_data['status'] = 'needsAction'
+                    changes.append("status to needs action")
+                else:
+                    return f"❌ **Invalid status**: '{status}'. Use 'completed' or 'needsAction'"
+            
+            if due_date is not None:
+                # Parse due date using existing calendar logic
+                if due_date.lower() in ['none', 'clear', 'remove', '']:
+                    task_data['due'] = None
+                    changes.append("removed due date")
+                else:
+                    try:
+                        parsed_date = self.parse_date_time(due_date, default_time="23:59")
+                        if parsed_date:
+                            # Google Tasks uses RFC 3339 date format (YYYY-MM-DD)
+                            due_rfc3339 = parsed_date.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+                            task_data['due'] = due_rfc3339
+                            readable_date = parsed_date.strftime('%Y-%m-%d %H:%M')
+                            changes.append(f"due date to {readable_date}")
+                        else:
+                            return f"❌ **Invalid due date format**: '{due_date}'. Try 'tomorrow', '2024-01-15', or 'next Monday'"
+                    except Exception as e:
+                        return f"❌ **Error parsing due date**: {str(e)}"
+
+            if not task_data:
+                return f"❌ **No changes specified**. Provide title, notes, due_date, or status to update."
+
+            # Update the task
+            self.log_debug(f"🚀 Calling API to update task: list={actual_list_id}, task={actual_task_id}, data={task_data}")
+            try:
+                updated_task = service.tasks().update(
+                    tasklist=actual_list_id,
+                    task=actual_task_id,
+                    body=task_data
+                ).execute()
+            except Exception as e:
+                error_msg = str(e)
+                self.log_debug(f"❌ Update API call failed: {error_msg}")
+                
+                # Try base64 decoding fallback combinations if update fails
+                if "missing task id" in error_msg.lower() or "invalid" in error_msg.lower():
+                    self.log_debug(f"🔄 Trying base64 decoding fallback combinations for update operation")
+                    
+                    # Prepare decoded versions
+                    decoded_list_id = None
+                    decoded_task_id = None
+                    
+                    if self._looks_like_base64(list_id):
+                        try:
+                            import base64
+                            missing_padding = 4 - len(list_id) % 4
+                            test_id = list_id + ('=' * missing_padding if missing_padding != 4 else '')
+                            decoded_list_id = base64.b64decode(test_id).decode('utf-8')
+                            self.log_debug(f"🔓 Decoded list ID available: '{list_id}' -> '{decoded_list_id}'")
+                        except Exception:
+                            self.log_debug(f"🔓 Could not decode list ID: '{list_id}'")
+                    
+                    if self._looks_like_base64(task_id):
+                        try:
+                            import base64
+                            missing_padding = 4 - len(task_id) % 4
+                            test_id = task_id + ('=' * missing_padding if missing_padding != 4 else '')
+                            decoded_task_id = base64.b64decode(test_id).decode('utf-8')
+                            self.log_debug(f"🔓 Decoded task ID available: '{task_id}' -> '{decoded_task_id}'")
+                        except Exception:
+                            self.log_debug(f"🔓 Could not decode task ID: '{task_id}'")
+                    
+                    # Try different combinations in order of likelihood
+                    combinations = [
+                        (actual_list_id, decoded_task_id, "original list + decoded task"),
+                        (decoded_list_id, actual_task_id, "decoded list + original task"),
+                        (decoded_list_id, decoded_task_id, "decoded list + decoded task")
+                    ]
+                    
+                    for test_list_id, test_task_id, description in combinations:
+                        if test_list_id is None or test_task_id is None:
+                            continue
+                            
+                        try:
+                            self.log_debug(f"🚀 Trying {description}: list={test_list_id}, task={test_task_id}")
+                            self.log_debug(f"📦 Request body: {task_data}")
+                            self.log_debug(f"🌐 Full URL would be: https://tasks.googleapis.com/tasks/v1/lists/{test_list_id}/tasks/{test_task_id}")
+                            updated_task = service.tasks().update(
+                                tasklist=test_list_id,
+                                task=test_task_id,
+                                body=task_data
+                            ).execute()
+                            self.log_debug(f"✅ Update succeeded with {description}!")
+                            # Update the IDs for response
+                            actual_list_id = test_list_id
+                            actual_task_id = test_task_id
+                            break
+                        except Exception as e2:
+                            error_details = str(e2)
+                            self.log_debug(f"❌ {description} failed: {error_details}")
+                            # Log more details about the failure
+                            if hasattr(e2, 'resp'):
+                                self.log_debug(f"📄 Response status: {getattr(e2.resp, 'status', 'unknown')}")
+                            continue
+                    else:
+                        # All combinations failed
+                        self.log_debug(f"❌ All base64 fallback combinations failed")
+                        return f"❌ **Task update failed**: {error_msg}"
+                else:
+                    return f"❌ **Task update failed**: {error_msg}"
+
+            if not updated_task:
+                return f"❌ **Task update failed** for unknown reasons."
+
+            # Format response
+            task_title = updated_task.get('title', 'Untitled Task')
+            updated_time = updated_task.get('updated', '')
+            
+            response = f"✅ **Task updated successfully**!\n\n"
+            response += f"**Task**: {task_title}\n"
+            response += f"**Changes**: {', '.join(changes)}\n"
+            response += f"**Task ID**: `{actual_task_id}`\n"
+            
+            if updated_time:
+                response += f"**Updated**: {updated_time[:10]}\n"
+
+            response += f"\n💡 **Tip**: Use `get_tasks('{list_id}')` to view all tasks in this list."
+
+            self.log_debug(f"Task updated successfully: {task_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Update task failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task or list not found**: Check the task ID {task_id} and list ID {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to this task list."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before updating more tasks."
+            elif "invalidArgument" in error_str:
+                return f"❌ **Invalid task data**: Please check that all fields are valid."
+            else:
+                return f"❌ **Error updating task**: {error_str}"
+
+    def move_task(self, list_id: str, task_id: str, parent_id: Optional[str] = None, 
+                  previous_sibling_id: Optional[str] = None) -> str:
+        """
+        Move a task to a different position or make it a subtask
+        
+        Args:
+            list_id: ID of the task list containing the task
+            task_id: ID of the task to move
+            parent_id: ID of the parent task (to make this a subtask), or None for top-level
+            previous_sibling_id: ID of the task that should come before this one
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Moving task: {task_id} in list: {list_id}")
+
+            # Validate task list ID format
+            actual_list_id, list_error = self._validate_task_list_id(list_id)
+            if list_error:
+                self.log_debug(f"❌ List ID validation failed: {list_error}")
+                return f"❌ **Invalid task list ID**: {list_error}"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted list ID from '{list_id}' to '{actual_list_id}'")
+
+            # Validate task ID format
+            actual_task_id, task_error = self._validate_task_id(task_id)
+            if task_error:
+                self.log_debug(f"❌ Task ID validation failed: {task_error}")
+                return f"❌ **Invalid task ID**: {task_error}"
+            
+            if actual_task_id != task_id:
+                self.log_debug(f"🔄 Converted task ID from '{task_id}' to '{actual_task_id}'")
+
+            # Validate parent_id if provided
+            actual_parent_id = None
+            if parent_id:
+                actual_parent_id, parent_error = self._validate_task_id(parent_id)
+                if parent_error:
+                    self.log_debug(f"❌ Parent task ID validation failed: {parent_error}")
+                    return f"❌ **Invalid parent task ID**: {parent_error}"
+                
+                if actual_parent_id != parent_id:
+                    self.log_debug(f"🔄 Converted parent task ID from '{parent_id}' to '{actual_parent_id}'")
+
+            # Validate previous_sibling_id if provided
+            actual_previous_id = None
+            if previous_sibling_id:
+                actual_previous_id, previous_error = self._validate_task_id(previous_sibling_id)
+                if previous_error:
+                    self.log_debug(f"❌ Previous sibling task ID validation failed: {previous_error}")
+                    return f"❌ **Invalid previous sibling task ID**: {previous_error}"
+                
+                if actual_previous_id != previous_sibling_id:
+                    self.log_debug(f"🔄 Converted previous sibling task ID from '{previous_sibling_id}' to '{actual_previous_id}'")
+
+            # Get existing task first to show current position
+            try:
+                existing_task = service.tasks().get(tasklist=actual_list_id, task=actual_task_id).execute()
+                task_title = existing_task.get('title', 'Untitled Task')
+            except Exception:
+                return f"❌ **Task not found**: {actual_task_id} in list {actual_list_id}"
+
+            # Move the task
+            moved_task = service.tasks().move(
+                tasklist=actual_list_id,
+                task=actual_task_id,
+                parent=actual_parent_id,
+                previous=actual_previous_id
+            ).execute()
+
+            if not moved_task:
+                return f"❌ **Task move failed** for unknown reasons."
+
+            # Format response based on move type
+            response = f"✅ **Task moved successfully**!\n\n"
+            response += f"**Task**: {task_title}\n"
+            response += f"**Task ID**: `{actual_task_id}`\n"
+            
+            if actual_parent_id:
+                # Try to get parent task title for better user feedback
+                try:
+                    parent_task = service.tasks().get(tasklist=actual_list_id, task=actual_parent_id).execute()
+                    parent_title = parent_task.get('title', 'Unknown Task')
+                    response += f"**Action**: Moved as subtask under '{parent_title}'\n"
+                except:
+                    response += f"**Action**: Moved as subtask under task `{actual_parent_id}`\n"
+            else:
+                response += f"**Action**: Moved to top level\n"
+            
+            if actual_previous_id:
+                try:
+                    sibling_task = service.tasks().get(tasklist=actual_list_id, task=actual_previous_id).execute()
+                    sibling_title = sibling_task.get('title', 'Unknown Task')
+                    response += f"**Position**: After '{sibling_title}'\n"
+                except:
+                    response += f"**Position**: After task `{previous_sibling_id}`\n"
+
+            response += f"\n💡 **Tip**: Use `get_tasks('{list_id}')` to see the updated task hierarchy."
+
+            self.log_debug(f"Task moved successfully: {task_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Move task failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task or reference not found**: Check task ID {task_id}, parent ID, and sibling ID"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to this task list."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before moving more tasks."
+            elif "invalidArgument" in error_str:
+                return f"❌ **Invalid move operation**: Check that parent and sibling tasks exist and are in the same list."
+            else:
+                return f"❌ **Error moving task**: {error_str}"
+
+    def delete_task(self, list_id: str, task_id: str) -> str:
+        """
+        Delete a task (and all its subtasks)
+        
+        Args:
+            list_id: ID of the task list containing the task
+            task_id: ID of the task to delete
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Deleting task: {task_id} from list: {list_id}")
+
+            # Validate task list ID format
+            actual_list_id, list_error = self._validate_task_list_id(list_id)
+            if list_error:
+                self.log_debug(f"❌ List ID validation failed: {list_error}")
+                return f"❌ **Invalid task list ID**: {list_error}"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted list ID from '{list_id}' to '{actual_list_id}'")
+
+            # Validate task ID format
+            actual_task_id, task_error = self._validate_task_id(task_id)
+            if task_error:
+                self.log_debug(f"❌ Task ID validation failed: {task_error}")
+                return f"❌ **Invalid task ID**: {task_error}"
+            
+            if actual_task_id != task_id:
+                self.log_debug(f"🔄 Converted task ID from '{task_id}' to '{actual_task_id}'")
+
+            # Get existing task first to show what's being deleted
+            try:
+                existing_task = service.tasks().get(tasklist=actual_list_id, task=actual_task_id).execute()
+                task_title = existing_task.get('title', 'Untitled Task')
+                task_status = existing_task.get('status', 'needsAction')
+            except Exception:
+                return f"❌ **Task not found**: {actual_task_id} in list {actual_list_id}"
+
+            # Check if task has subtasks by listing tasks and looking for children
+            subtask_count = 0
+            try:
+                all_tasks = service.tasks().list(tasklist=actual_list_id, showCompleted=True, showHidden=True).execute()
+                tasks = all_tasks.get('items', [])
+                
+                for task in tasks:
+                    if task.get('parent') == actual_task_id:
+                        subtask_count += 1
+            except:
+                # If we can't check subtasks, proceed anyway
+                pass
+
+            # Delete the task
+            service.tasks().delete(tasklist=actual_list_id, task=actual_task_id).execute()
+
+            # Format response
+            response = f"✅ **Task deleted successfully**!\n\n"
+            response += f"**Deleted Task**: {task_title}\n"
+            response += f"**Task ID**: `{actual_task_id}`\n"
+            response += f"**Status**: {task_status}\n"
+            
+            if subtask_count > 0:
+                response += f"**Subtasks**: {subtask_count} subtask(s) also deleted\n"
+                response += f"\n⚠️  **Note**: Deleting a parent task also removes all its subtasks permanently."
+
+            response += f"\n💡 **Tip**: Use `get_tasks('{list_id}')` to see the updated task list."
+
+            self.log_debug(f"Task deleted successfully: {actual_task_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Delete task failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task not found**: {task_id} in list {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to this task list."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before deleting more tasks."
+            else:
+                return f"❌ **Error deleting task**: {error_str}"
+
+    def mark_task_complete(self, list_id: str, task_id: str) -> str:
+        """
+        Mark a task as completed
+        
+        Args:
+            list_id: ID of the task list containing the task
+            task_id: ID of the task to mark as complete
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Marking task complete: {task_id} in list: {list_id}")
+            
+            # Validate task list ID format
+            actual_list_id, list_error = self._validate_task_list_id(list_id)
+            if list_error:
+                self.log_debug(f"❌ List ID validation failed: {list_error}")
+                return f"❌ **Invalid task list ID**: {list_error}"
+            
+            if actual_list_id != list_id:
+                self.log_debug(f"🔄 Converted list ID from '{list_id}' to '{actual_list_id}'")
+
+            # Validate task ID format
+            actual_task_id, task_error = self._validate_task_id(task_id)
+            if task_error:
+                self.log_debug(f"❌ Task ID validation failed: {task_error}")
+                return f"❌ **Invalid task ID**: {task_error}"
+            
+            if actual_task_id != task_id:
+                self.log_debug(f"🔄 Converted task ID from '{task_id}' to '{actual_task_id}'")
+
+            # Add debugging for task ID
+            self.log_debug(f"📝 Task ID format: length={len(actual_task_id)}, contains_special_chars={'@' in actual_task_id or '=' in actual_task_id}")
+            
+            # Get existing task first
+            try:
+                self.log_debug(f"🔍 Getting existing task with list_id={actual_list_id}, task_id={actual_task_id}")
+                existing_task = service.tasks().get(tasklist=actual_list_id, task=actual_task_id).execute()
+                task_title = existing_task.get('title', 'Untitled Task')
+                current_status = existing_task.get('status', 'needsAction')
+                self.log_debug(f"✅ Found task: '{task_title}' with status: {current_status}")
+            except Exception as e:
+                self.log_debug(f"❌ Failed to get existing task: {e}")
+                return f"❌ **Task not found**: {actual_task_id} in list {actual_list_id}\n**Error**: {str(e)}"
+
+            # Check if already completed
+            if current_status == 'completed':
+                return f"ℹ️  **Task already completed**: '{task_title}'"
+
+            # Update task status to completed
+            # IMPORTANT: Include the task ID and title in the request body (required for updates)
+            task_data = {
+                'id': actual_task_id,
+                'title': task_title,
+                'status': 'completed'
+            }
+
+            self.log_debug(f"🚀 Calling API to mark task complete: list={actual_list_id}, task={actual_task_id}")
+            try:
+                updated_task = service.tasks().update(
+                    tasklist=actual_list_id,
+                    task=actual_task_id,
+                    body=task_data
+                ).execute()
+            except Exception as e:
+                error_msg = str(e)
+                self.log_debug(f"❌ Mark complete API call failed: {error_msg}")
+                
+                # Try base64 decoding fallback combinations if mark complete fails
+                if "missing task id" in error_msg.lower() or "invalid" in error_msg.lower():
+                    self.log_debug(f"🔄 Trying base64 decoding fallback combinations for mark complete operation")
+                    
+                    # Prepare decoded versions
+                    decoded_list_id = None
+                    decoded_task_id = None
+                    
+                    if self._looks_like_base64(list_id):
+                        try:
+                            import base64
+                            missing_padding = 4 - len(list_id) % 4
+                            test_id = list_id + ('=' * missing_padding if missing_padding != 4 else '')
+                            decoded_list_id = base64.b64decode(test_id).decode('utf-8')
+                            self.log_debug(f"🔓 Decoded list ID available: '{list_id}' -> '{decoded_list_id}'")
+                        except Exception:
+                            self.log_debug(f"🔓 Could not decode list ID: '{list_id}'")
+                    
+                    if self._looks_like_base64(task_id):
+                        try:
+                            import base64
+                            missing_padding = 4 - len(task_id) % 4
+                            test_id = task_id + ('=' * missing_padding if missing_padding != 4 else '')
+                            decoded_task_id = base64.b64decode(test_id).decode('utf-8')
+                            self.log_debug(f"🔓 Decoded task ID available: '{task_id}' -> '{decoded_task_id}'")
+                        except Exception:
+                            self.log_debug(f"🔓 Could not decode task ID: '{task_id}'")
+                    
+                    # Try different combinations in order of likelihood
+                    combinations = [
+                        (actual_list_id, decoded_task_id, "original list + decoded task"),
+                        (decoded_list_id, actual_task_id, "decoded list + original task"),
+                        (decoded_list_id, decoded_task_id, "decoded list + decoded task")
+                    ]
+                    
+                    for test_list_id, test_task_id, description in combinations:
+                        if test_list_id is None or test_task_id is None:
+                            continue
+                            
+                        try:
+                            self.log_debug(f"🚀 Trying {description}: list={test_list_id}, task={test_task_id}")
+                            updated_task = service.tasks().update(
+                                tasklist=test_list_id,
+                                task=test_task_id,
+                                body=task_data
+                            ).execute()
+                            self.log_debug(f"✅ Mark complete succeeded with {description}!")
+                            # Update the IDs for response
+                            actual_list_id = test_list_id
+                            actual_task_id = test_task_id
+                            break
+                        except Exception as e2:
+                            self.log_debug(f"❌ {description} failed: {e2}")
+                            continue
+                    else:
+                        # All combinations failed
+                        self.log_debug(f"❌ All base64 fallback combinations failed")
+                        return f"❌ **Task completion failed**: {error_msg}"
+                else:
+                    return f"❌ **Task completion failed**: {error_msg}"
+
+            if not updated_task:
+                return f"❌ **Task completion failed** for unknown reasons."
+
+            # Format response
+            completed_time = updated_task.get('completed', '')
+            
+            response = f"✅ **Task marked as completed**!\n\n"
+            response += f"**Task**: {task_title}\n"
+            response += f"**Task ID**: `{actual_task_id}`\n"
+            response += f"**Status**: completed ✓\n"
+            
+            if completed_time:
+                response += f"**Completed**: {completed_time[:10]}\n"
+
+            response += f"\n💡 **Tips**:\n"
+            response += f"• Use `get_tasks('{list_id}', show_completed=True)` to see completed tasks\n"
+            response += f"• Use `update_task('{list_id}', '{actual_task_id}', status='needsAction')` to reopen this task"
+
+            self.log_debug(f"Task marked complete successfully: {actual_task_id}")
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Mark task complete failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "notFound" in error_str:
+                return f"❌ **Task not found**: {task_id} in list {list_id}"
+            elif "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to this task list."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before updating more tasks."
+            else:
+                return f"❌ **Error marking task complete**: {error_str}"
+
     def get_authentication_status(self) -> str:
         """Check current authentication status"""
         try:
@@ -2308,4 +3858,67 @@ def create_contact(name: str, email: str, phone: str = None, organization: str =
     """Create a new contact (write operation - includes duplicate detection)"""
     tool = Tools()
     return tool.create_contact(name, email, phone, organization)
-      
+
+# ========== TASKS PUBLIC FUNCTIONS ==========
+
+def get_task_lists() -> str:
+    """List all task lists available to the user"""
+    tool = Tools()
+    return tool.get_task_lists()
+
+def create_task_list(name: str, description: str = None) -> str:
+    """Create a new task list"""
+    tool = Tools()
+    return tool.create_task_list(name, description)
+
+def update_task_list(list_id: str, name: str) -> str:
+    """Update the name of an existing task list"""
+    tool = Tools()
+    return tool.update_task_list(list_id, name)
+
+def delete_task_list(list_id: str) -> str:
+    """Delete a task list (WARNING: This will delete all tasks in the list!)"""
+    tool = Tools()
+    return tool.delete_task_list(list_id)
+
+def clear_completed_tasks(list_id: str) -> str:
+    """Clear all completed tasks from a task list"""
+    tool = Tools()
+    return tool.clear_completed_tasks(list_id)
+
+def get_tasks(list_id: str, show_completed: bool = None, show_hidden: bool = False) -> str:
+    """Get tasks from a specific task list with filtering options"""
+    tool = Tools()
+    return tool.get_tasks(list_id, show_completed, show_hidden)
+
+def create_task_with_smart_list_selection(title: str, notes: str = None, due_date: str = None, 
+                                        list_hint: str = None, parent_id: str = None) -> str:
+    """Create a task with smart list selection (similar to smart calendar selection)"""
+    tool = Tools()
+    return tool.create_task_with_smart_list_selection(title, notes, due_date, list_hint, parent_id)
+
+def create_task(list_id: str, title: str, notes: str = None, due_date: str = None, parent_id: str = None) -> str:
+    """Create a task in a specific task list"""
+    tool = Tools()
+    return tool.create_task(list_id, title, notes, due_date, parent_id)
+
+def update_task(list_id: str, task_id: str, title: str = None, notes: str = None, 
+               due_date: str = None, status: str = None) -> str:
+    """Update an existing task with new title, notes, due date, or status"""
+    tool = Tools()
+    return tool.update_task(list_id, task_id, title, notes, due_date, status)
+
+def move_task(list_id: str, task_id: str, parent_id: str = None, previous_sibling_id: str = None) -> str:
+    """Move a task to a different position or make it a subtask"""
+    tool = Tools()
+    return tool.move_task(list_id, task_id, parent_id, previous_sibling_id)
+
+def delete_task(list_id: str, task_id: str) -> str:
+    """Delete a task and all its subtasks"""
+    tool = Tools()
+    return tool.delete_task(list_id, task_id)
+
+def mark_task_complete(list_id: str, task_id: str) -> str:
+    """Mark a task as completed"""
+    tool = Tools()
+    return tool.mark_task_complete(list_id, task_id)

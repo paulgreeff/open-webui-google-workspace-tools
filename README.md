@@ -1,8 +1,8 @@
 # Open-WebUI Google Workspace Tools
 
-**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail, Calendar, and Contacts functionality.
+**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail, Calendar, Contacts, and Google Tasks functionality.
 
-> ✅ **Status**: All Gmail, Calendar, and Contacts functions are fully tested and working perfectly with comprehensive Google Workspace integration.
+> ✅ **Status**: All Gmail, Calendar, Contacts, and Google Tasks functions are fully tested and working perfectly with comprehensive Google Workspace integration.
 
 ## Features
 
@@ -34,6 +34,14 @@
 - **Contact creation**: Add new contacts with duplicate detection
 - **Cross-service integration**: Seamless contact lookup when composing emails
 
+### ✅ Google Tasks Management
+- **Task list management**: View and manage multiple task lists
+- **Smart task operations**: Create, update, and complete tasks with proper ID handling
+- **Task search and filtering**: Find tasks with flexible search criteria
+- **Completion tracking**: Mark tasks complete with automatic status updates
+- **Bulk operations**: Clear completed tasks (hides them from default view)
+- **Cross-service integration**: Convert emails and calendar events to actionable tasks
+
 ### 🎯 AI-Powered Features
 - **Smart calendar selection**: "Add to family calendar" automatically finds the right calendar
 - **Intelligent date parsing**: Accepts "tomorrow 2pm", "next Friday", ISO dates, and natural language
@@ -64,6 +72,14 @@
 - `get_contact_details()` - Get comprehensive contact information by resource ID
 - `list_recent_contacts()` - List recently added or modified contacts
 - `create_contact()` - Create new contacts with duplicate detection
+
+### Google Tasks Functions (Fully Tested ✅)
+- `get_task_lists()` - List all task lists with metadata
+- `get_tasks()` - Retrieve tasks with flexible filtering (completed, hidden, search)
+- `create_task()` - Create new tasks with optional due dates and notes
+- `update_task()` - Modify existing tasks (title, notes, due date)
+- `mark_task_complete()` - Mark tasks as completed with status tracking
+- `clear_completed_tasks()` - Hide completed tasks from default view
 
 ## Quick Start
 
@@ -108,6 +124,12 @@ search_contacts("John Smith", max_results=5)
 lookup_contact_by_email("john@company.com")
 list_recent_contacts(limit=10)
 create_contact("Jane Doe", "jane@example.com", phone="+1234567890")
+
+# Task management
+get_task_lists()
+get_tasks("@default", show_completed=True)
+create_task("@default", "Review project proposal", due_date="2024-01-15")
+mark_task_complete("task_list_id", "task_id")
 ```
 
 ## Use Cases
@@ -126,6 +148,8 @@ create_contact("Jane Doe", "jane@example.com", phone="+1234567890")
 - **Email to calendar**: Find meeting invitations and convert to calendar events
 - **Follow-up automation**: Create calendar reminders for email follow-ups
 - **Project tracking**: Link project emails with milestone calendar events
+- **Email to tasks**: Convert email action items into trackable tasks
+- **Calendar to tasks**: Create follow-up tasks from meeting outcomes
 
 ### Advanced Automation
 - **Weekly reviews**: Analyze calendar utilization and email follow-ups
@@ -148,7 +172,7 @@ create_contact("Jane Doe", "jane@example.com", phone="+1234567890")
 The tool provides extensive customization through Open-WebUI settings:
 
 ### Authentication & Services
-- **enabled_services**: Comma-separated list (default: "gmail,calendar,contacts")
+- **enabled_services**: Comma-separated list (default: "gmail,calendar,contacts,tasks")
 - **credentials_json**: Your Google Cloud OAuth2 credentials
 - **auth_status**: Current authentication state (read-only)
 
@@ -166,6 +190,11 @@ The tool provides extensive customization through Open-WebUI settings:
 ### Contacts Settings
 - **max_contact_results**: Maximum contacts returned in searches (default: 10)
 - **contact_display_fields**: Default fields to show (default: "name,email")
+
+### Google Tasks Settings
+- **default_task_list**: Preferred task list for new tasks (default: "@default")
+- **max_task_results**: Maximum tasks returned in searches (default: 50)
+- **show_completed_by_default**: Include completed tasks in task listing (default: false)
 
 ### Advanced Options
 - **debug_mode**: Enable detailed logging for troubleshooting
@@ -204,13 +233,13 @@ Enable debug logging in tool settings to see detailed API interactions and error
 
 ### Planned Features
 - **Google Drive**: File search, organization, and automated workflows
-- **Google Tasks**: Todo management and task automation  
 - **Google Docs/Sheets**: Document creation and spreadsheet automation
 - **Multi-user support**: Enterprise-ready user isolation and admin controls
+- **Advanced task automation**: Smart task dependencies and project management
 
 ### Future Integrations
-- **Cross-service automation**: Advanced workflows between Gmail, Calendar, Contacts, and Drive
-- **AI-powered insights**: Intelligent analysis of communication patterns and schedule optimization
+- **Cross-service automation**: Advanced workflows between Gmail, Calendar, Contacts, Tasks, and Drive
+- **AI-powered insights**: Intelligent analysis of communication patterns, schedule optimization, and task prioritization
 - **Template systems**: Reusable workflows for common business processes
 
 ## Contributing

@@ -1,5 +1,7 @@
 # Installation Guide
 
+✅ **All functions are working perfectly** - This installation guide is verified and tested.
+
 ## Prerequisites
 
 Before installing Google Workspace Tools, ensure you have:
@@ -13,7 +15,11 @@ Before installing Google Workspace Tools, ensure you have:
 The tool requires several Google API client libraries. Install them in your Open-WebUI environment:
 
 ```bash
-pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client python-dateutil
+# Recommended: Use the requirements file
+pip install -r requirements.txt
+
+# Or install manually:
+pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client python-dateutil pytz pydantic
 ```
 
 ## Step 2: Download the Tool

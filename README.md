@@ -1,6 +1,8 @@
 # Open-WebUI Google Workspace Tools
 
-Comprehensive Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail and Calendar functionality.
+**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail and Calendar functionality.
+
+> ✅ **Status**: All Gmail and Calendar functions are working perfectly with proper timezone handling and cross-service automation.
 
 ## Features
 
@@ -31,29 +33,30 @@ Comprehensive Google Workspace integration for Open-WebUI, enabling AI assistant
 - **Permission-aware operations**: Only shows writable calendars for event creation
 - **Cross-service workflows**: Convert emails to calendar events seamlessly
 
-## Current Functionality
+## ✅ Verified Working Functionality
 
-### Gmail Functions
+### Gmail Functions (Fully Tested ✅)
 - `get_recent_emails()` - Fetch recent emails with filtering options
 - `search_emails()` - Search emails using Gmail syntax  
 - `get_email_content()` - Get full email content with headers
 - `create_draft()` - Create draft emails with optional reply threading
 - `create_draft_reply()` - Smart reply drafts with proper message threading
 
-### Calendar Functions
+### Calendar Functions (Fully Tested ✅)
 - `get_calendars()` - List all calendars with access permissions
 - `get_upcoming_events()` - View events with smart calendar filtering
 - `get_event_details()` - Comprehensive event information with attendees
-- `create_event_smart()` - Create events with AI calendar selection
+- `create_event_smart()` - Create events with AI calendar selection (timezone-aware)
 - `search_calendar_events()` - Search events with relevance ranking
-- `get_todays_schedule()` - Daily briefings with priority categorization
+- `get_todays_schedule()` - Daily briefings with priority categorization (timezone-fixed)
 
 ## Quick Start
 
 ### 1. Installation
 ```bash
 # Install required dependencies
-pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client python-dateutil
+pip install -r requirements.txt
+# Or manually: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client python-dateutil pytz pydantic
 
 # Import google_workspace_tools.py into your Open-WebUI tools
 ```

@@ -10,6 +10,7 @@ import os
 from test_framework import TestFramework
 from test_gmail import GmailTests
 from test_calendar import CalendarTests
+from test_contacts import ContactTests
 
 
 class InteractiveTestRunner:
@@ -19,6 +20,7 @@ class InteractiveTestRunner:
         self.framework = TestFramework()
         self.gmail_tests = None
         self.calendar_tests = None
+        self.contact_tests = None
         self.setup_complete = False
         
     def setup(self):
@@ -27,6 +29,7 @@ class InteractiveTestRunner:
         if self.framework.run_setup_check():
             self.gmail_tests = GmailTests(self.framework)
             self.calendar_tests = CalendarTests(self.framework)
+            self.contact_tests = ContactTests(self.framework)
             self.setup_complete = True
             return True
         return False
@@ -37,11 +40,12 @@ class InteractiveTestRunner:
         print("🧪 Google Workspace Tools - Interactive Test Runner")
         print("=" * 50)
         print("1. 📧 Run Gmail Tests")
-        print("2. 📅 Run Calendar Tests") 
-        print("3. 🚀 Run All Tests")
-        print("4. 🔍 Individual Function Tests")
-        print("5. 📊 Authentication Status")
-        print("6. ❓ Help")
+        print("2. 📅 Run Calendar Tests")
+        print("3. 👥 Run Contacts Tests") 
+        print("4. 🚀 Run All Tests")
+        print("5. 🔍 Individual Function Tests")
+        print("6. 📊 Authentication Status")
+        print("7. ❓ Help")
         print("0. 🚪 Exit")
         print("-" * 50)
         
@@ -66,6 +70,18 @@ class InteractiveTestRunner:
         print("5. Search Events")
         print("6. Create Event (Smart)")
         print("7. Run All Calendar Tests")
+        print("0. Back to Main Menu")
+        
+    def show_contacts_menu(self):
+        """Display Contacts test menu"""
+        print("\n👥 Contacts Tests:")
+        print("1. List Recent Contacts")
+        print("2. Search Contacts")
+        print("3. Get Contact Details")
+        print("4. Email Lookup")
+        print("5. Create Contact")
+        print("6. Duplicate Detection Test")
+        print("7. Run All Contacts Tests")
         print("0. Back to Main Menu")
     
     def run_gmail_menu(self):
@@ -116,6 +132,31 @@ class InteractiveTestRunner:
             else:
                 print("❌ Invalid choice. Please try again.")
     
+    def run_contacts_menu(self):
+        """Handle Contacts test menu"""
+        while True:
+            self.show_contacts_menu()
+            choice = input("\nEnter choice (0-7): ").strip()
+            
+            if choice == "0":
+                break
+            elif choice == "1":
+                self.contact_tests.test_list_recent_contacts()
+            elif choice == "2":
+                self.contact_tests.test_search_contacts()
+            elif choice == "3":
+                self.contact_tests.test_get_contact_details()
+            elif choice == "4":
+                self.contact_tests.test_lookup_contact_by_email()
+            elif choice == "5":
+                self.contact_tests.test_create_contact()
+            elif choice == "6":
+                self.contact_tests.test_duplicate_detection()
+            elif choice == "7":
+                self.contact_tests.run_all_tests()
+            else:
+                print("❌ Invalid choice. Please try again.")
+    
     def run_individual_tests(self):
         """Run individual function tests with custom parameters"""
         print("\n🔍 Individual Function Tests")
@@ -123,10 +164,12 @@ class InteractiveTestRunner:
         print("1. Custom Email Search")
         print("2. Custom Event Creation")
         print("3. Custom Calendar Filter")
-        print("4. Authentication Test")
+        print("4. Custom Contact Search")
+        print("5. Custom Contact Lookup")
+        print("6. Authentication Test")
         print("0. Back to Main Menu")
         
-        choice = input("\nEnter choice (0-4): ").strip()
+        choice = input("\nEnter choice (0-6): ").strip()
         
         if choice == "0":
             return
@@ -162,6 +205,23 @@ class InteractiveTestRunner:
                 print(f"❌ Error: {e}")
                 
         elif choice == "4":
+            query = input("Enter contact search query: ").strip()
+            max_results = input("Max results (default 10): ").strip() or "10"
+            try:
+                result = self.framework.tools.search_contacts(query, int(max_results))
+                print(f"\n✅ Contact Search Results:\n{result}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                
+        elif choice == "5":
+            email = input("Enter email address to lookup: ").strip()
+            try:
+                result = self.framework.tools.lookup_contact_by_email(email)
+                print(f"\n✅ Contact Lookup Result:\n{result}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                
+        elif choice == "6":
             self.framework.test_authentication()
         else:
             print("❌ Invalid choice.")
@@ -183,6 +243,7 @@ class InteractiveTestRunner:
         print("🧪 Test Categories:")
         print("- Gmail Tests: Email reading, searching, and draft creation")
         print("- Calendar Tests: Event management and calendar operations")
+        print("- Contacts Tests: Contact search, lookup, and management")
         print("- Individual Tests: Custom function calls with your parameters")
         print("")
         print("⚠️  Note: Some tests create real data (drafts, events)")
@@ -218,6 +279,14 @@ class InteractiveTestRunner:
                 print(f"Available calendars: {calendars[:200]}...")
             except Exception as e:
                 print(f"❌ Calendar: {str(e)[:100]}")
+            
+            print("\n👥 Testing Contacts access...")
+            try:
+                contacts = self.framework.tools.list_recent_contacts(limit=1)
+                print("✅ Contacts: Accessible")
+                print(f"Contact status: {contacts[:200]}...")
+            except Exception as e:
+                print(f"❌ Contacts: {str(e)[:100]}")
                 
         except Exception as e:
             print(f"❌ Authentication check failed: {e}")
@@ -238,7 +307,7 @@ class InteractiveTestRunner:
         while True:
             try:
                 self.show_main_menu()
-                choice = input("Enter your choice (0-6): ").strip()
+                choice = input("Enter your choice (0-7): ").strip()
                 
                 if choice == "0":
                     print("👋 Goodbye!")
@@ -248,24 +317,27 @@ class InteractiveTestRunner:
                 elif choice == "2":
                     self.run_calendar_menu()
                 elif choice == "3":
+                    self.run_contacts_menu()
+                elif choice == "4":
                     print("\n🚀 Running All Tests...")
                     gmail_success = self.gmail_tests.run_all_tests()
                     calendar_success = self.calendar_tests.run_all_tests()
+                    contacts_success = self.contact_tests.run_all_tests()
                     
-                    if gmail_success and calendar_success:
+                    if gmail_success and calendar_success and contacts_success:
                         print("\n🎉 All tests passed!")
                     else:
                         print("\n💥 Some tests failed. Check the output above for details.")
                     
                     input("\nPress Enter to continue...")
-                elif choice == "4":
-                    self.run_individual_tests()
                 elif choice == "5":
-                    self.check_auth_status()
+                    self.run_individual_tests()
                 elif choice == "6":
+                    self.check_auth_status()
+                elif choice == "7":
                     self.show_help()
                 else:
-                    print("❌ Invalid choice. Please enter a number between 0-6.")
+                    print("❌ Invalid choice. Please enter a number between 0-7.")
                     
             except KeyboardInterrupt:
                 print("\n\n👋 Interrupted by user. Goodbye!")

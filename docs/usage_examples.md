@@ -127,6 +127,56 @@ This guide provides practical examples of using Google Workspace Tools with your
 - Shows: Current events, imminent events, all-day events, and upcoming events
 - Includes: Helpful warnings for events starting soon
 
+## Contacts Functions
+
+### Searching Contacts
+
+**Search by name:**
+```
+"Find all contacts named John"
+```
+- Calls: `search_contacts("John", max_results=10)`
+- Returns: Contacts matching the name with basic information
+
+**Search by organization:**
+```
+"Show me all contacts from ABC Company"
+```
+- Calls: `search_contacts("ABC Company", max_results=10)`
+- Searches: Name, email, phone, and organization fields
+
+### Contact Lookup
+
+**Find contact by email:**
+```
+"Who is john.smith@example.com in my contacts?"
+```
+- Calls: `lookup_contact_by_email("john.smith@example.com")`
+- Returns: Complete contact information if found
+
+**Get detailed contact info:**
+```
+"Show me all details for contact ID people/c1234567890"
+```
+- Calls: `get_contact_details("people/c1234567890")`
+- Returns: Comprehensive contact details including all fields
+
+### Contact Management
+
+**List recent contacts:**
+```
+"Show me my recently added contacts"
+```
+- Calls: `list_recent_contacts(limit=20)`
+- Returns: Recently modified contacts with basic information
+
+**Create a new contact:**
+```
+"Add Jane Doe to my contacts with email jane@example.com"
+```
+- Calls: `create_contact("Jane Doe", "jane@example.com", phone="+1234567890", organization="Example Corp")`
+- Includes: Automatic duplicate detection and warning
+
 ## Advanced Usage Patterns
 
 ### Cross-Service Workflows
@@ -144,6 +194,21 @@ This guide provides practical examples of using Google Workspace Tools with your
 ```
 1. `get_upcoming_events(days_ahead=7)`
 2. AI analyzes gaps and suggests free time slots
+
+**Contact-Enhanced Email:**
+```
+"Look up contact details for john@company.com and draft a professional email"
+```
+1. `lookup_contact_by_email("john@company.com")`
+2. `create_draft()` using the contact's full name and organization
+
+**Meeting Contacts Integration:**
+```
+"Find Sarah's contact info and schedule a meeting with her"
+```
+1. `search_contacts("Sarah", max_results=5)`
+2. `get_contact_details()` for the specific Sarah
+3. `create_event_smart()` using her contact information
 
 ### Productivity Workflows
 

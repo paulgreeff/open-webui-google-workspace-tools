@@ -56,8 +56,8 @@ class Tools:
         
         # Feature Configuration
         enabled_services: str = Field(
-            default="gmail,calendar",
-            description="Enabled Google services (comma-separated): gmail,calendar,drive,tasks"
+            default="gmail,calendar,contacts",
+            description="Enabled Google services (comma-separated): gmail,calendar,contacts,drive,tasks"
         )
         
         # Gmail Settings
@@ -95,6 +95,17 @@ class Tools:
         default_calendar_name: str = Field(
             default="",
             description="Name of your default calendar for event creation (leave empty for primary calendar)"
+        )
+        
+        # Contacts Settings
+        max_contact_results: int = Field(
+            default=10,
+            description="Maximum number of contacts to return in search results"
+        )
+        
+        contact_display_fields: str = Field(
+            default="name,email",
+            description="Default fields to display for contacts (comma-separated): name,email,phone,organization"
         )
         
         # Debug Settings
@@ -149,7 +160,10 @@ class Tools:
                 'https://www.googleapis.com/auth/drive.readonly'
             ],
             'tasks': ['https://www.googleapis.com/auth/tasks'],
-            'contacts': ['https://www.googleapis.com/auth/contacts.readonly']
+            'contacts': [
+                'https://www.googleapis.com/auth/contacts.readonly',
+                'https://www.googleapis.com/auth/contacts'
+            ]
         }
         
         enabled = [s.strip() for s in self.valves.enabled_services.split(',')]
@@ -1534,6 +1548,608 @@ Then click this function again to continue setup.
             self.log_error(f"Get today's schedule failed: {e}")
             return f"❌ **Error getting today's schedule**: {str(e)}"
 
+    def search_contacts(self, query: str, max_results: Optional[int] = None) -> str:
+        """
+        Search contacts by name, email, phone, or organization
+        
+        Args:
+            query: Search query (supports partial matching)
+            max_results: Maximum results to return (default from settings)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('people', 'v1')
+            if not service:
+                return auth_status
+
+            # Use setting or parameter
+            limit = max_results if max_results is not None else self.valves.max_contact_results
+            
+            self.log_debug(f"Searching contacts for: '{query}' (limit: {limit})")
+
+            # Send warmup request as recommended by Google
+            try:
+                service.people().searchContacts(
+                    query='',
+                    readMask='names',
+                    pageSize=1
+                ).execute()
+                self.log_debug("Warmup search request completed")
+            except Exception as e:
+                self.log_debug(f"Warmup request failed (non-critical): {e}")
+
+            # Perform actual search
+            search_request = service.people().searchContacts(
+                query=query,
+                readMask='names,emailAddresses,phoneNumbers,organizations',
+                pageSize=limit
+            )
+            
+            results = search_request.execute()
+            contacts = results.get('results', [])
+            
+            if not contacts:
+                return f"🔍 **No contacts found** for query: '{query}'"
+
+            # Get display fields from settings
+            display_fields = [field.strip() for field in self.valves.contact_display_fields.split(',')]
+            
+            response = f"👥 **Found {len(contacts)} contact(s)** matching '{query}':\n\n"
+            
+            for contact in contacts:
+                person = contact.get('person', {})
+                contact_info = []
+                
+                # Name
+                if 'name' in display_fields:
+                    names = person.get('names', [])
+                    if names:
+                        display_name = names[0].get('displayName', 'Unknown')
+                        contact_info.append(f"**{display_name}**")
+                
+                # Email addresses
+                if 'email' in display_fields:
+                    emails = person.get('emailAddresses', [])
+                    email_list = []
+                    for email in emails:
+                        addr = email.get('value', '')
+                        if email.get('metadata', {}).get('primary'):
+                            email_list.append(f"{addr} (primary)")
+                        else:
+                            email_list.append(addr)
+                    if email_list:
+                        contact_info.append(f"📧 {', '.join(email_list)}")
+                
+                # Phone numbers
+                if 'phone' in display_fields:
+                    phones = person.get('phoneNumbers', [])
+                    phone_list = []
+                    for phone in phones:
+                        number = phone.get('value', '')
+                        phone_type = phone.get('type', 'unknown')
+                        phone_list.append(f"{number} ({phone_type})")
+                    if phone_list:
+                        contact_info.append(f"📞 {', '.join(phone_list)}")
+                
+                # Organization
+                if 'organization' in display_fields:
+                    orgs = person.get('organizations', [])
+                    if orgs:
+                        org = orgs[0]
+                        company = org.get('name', '')
+                        title = org.get('title', '')
+                        org_info = company
+                        if title:
+                            org_info += f" ({title})"
+                        if org_info:
+                            contact_info.append(f"🏢 {org_info}")
+                
+                # Add resource name for detailed lookup
+                resource_name = person.get('resourceName', '')
+                if resource_name:
+                    contact_info.append(f"🔗 ID: `{resource_name}`")
+                
+                if contact_info:
+                    response += "• " + " • ".join(contact_info) + "\n"
+                else:
+                    response += "• Contact found but no displayable information\n"
+
+            response += f"\n💡 **Tip**: Use `get_contact_details(ID)` for complete information about a specific contact."
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Contact search failed: {e}")
+            return f"❌ **Error searching contacts**: {str(e)}"
+
+    def lookup_contact_by_email(self, email_address: str) -> str:
+        """
+        Find contact by specific email address
+        
+        Args:
+            email_address: Email address to search for
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('people', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Looking up contact by email: {email_address}")
+
+            # Send warmup request
+            try:
+                service.people().searchContacts(
+                    query='',
+                    readMask='names',
+                    pageSize=1
+                ).execute()
+            except Exception as e:
+                self.log_debug(f"Warmup request failed (non-critical): {e}")
+
+            # Search for the email address
+            search_request = service.people().searchContacts(
+                query=email_address,
+                readMask='names,emailAddresses,phoneNumbers,organizations',
+                pageSize=10  # Should be enough for email lookup
+            )
+            
+            results = search_request.execute()
+            contacts = results.get('results', [])
+            
+            if not contacts:
+                return f"📧 **No contact found** with email address: {email_address}"
+
+            # Find exact email match
+            exact_match = None
+            for contact in contacts:
+                person = contact.get('person', {})
+                emails = person.get('emailAddresses', [])
+                for email in emails:
+                    if email.get('value', '').lower() == email_address.lower():
+                        exact_match = person
+                        break
+                if exact_match:
+                    break
+
+            if not exact_match:
+                return f"📧 **No exact match found** for email address: {email_address}"
+
+            # Format contact information
+            contact_info = []
+            
+            # Name
+            names = exact_match.get('names', [])
+            if names:
+                display_name = names[0].get('displayName', 'Unknown')
+                contact_info.append(f"**Name**: {display_name}")
+            
+            # Email addresses (showing all)
+            emails = exact_match.get('emailAddresses', [])
+            email_list = []
+            for email in emails:
+                addr = email.get('value', '')
+                if email.get('metadata', {}).get('primary'):
+                    email_list.append(f"{addr} (primary)")
+                else:
+                    email_list.append(addr)
+            if email_list:
+                contact_info.append(f"**Email**: {', '.join(email_list)}")
+            
+            # Phone numbers
+            phones = exact_match.get('phoneNumbers', [])
+            if phones:
+                phone_list = []
+                for phone in phones:
+                    number = phone.get('value', '')
+                    phone_type = phone.get('type', 'unknown')
+                    phone_list.append(f"{number} ({phone_type})")
+                contact_info.append(f"**Phone**: {', '.join(phone_list)}")
+            
+            # Organization
+            orgs = exact_match.get('organizations', [])
+            if orgs:
+                org = orgs[0]
+                company = org.get('name', '')
+                title = org.get('title', '')
+                org_info = company
+                if title:
+                    org_info += f" - {title}"
+                if org_info:
+                    contact_info.append(f"**Organization**: {org_info}")
+            
+            # Resource name for detailed lookup
+            resource_name = exact_match.get('resourceName', '')
+            if resource_name:
+                contact_info.append(f"**Contact ID**: `{resource_name}`")
+            
+            response = f"👤 **Contact found for {email_address}**:\n\n"
+            if contact_info:
+                response += "\n".join(contact_info)
+            else:
+                response += "Contact found but no additional information available."
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Contact lookup by email failed: {e}")
+            return f"❌ **Error looking up contact by email**: {str(e)}"
+
+    def get_contact_details(self, person_resource_name: str) -> str:
+        """
+        Get comprehensive details for a specific contact
+        
+        Args:
+            person_resource_name: The resource name of the person (from search results)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('people', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Getting contact details for: {person_resource_name}")
+
+            # Get comprehensive contact information
+            person = service.people().get(
+                resourceName=person_resource_name,
+                personFields='names,emailAddresses,phoneNumbers,organizations,addresses,birthdays,biographies,urls,relations,memberships'
+            ).execute()
+            
+            if not person:
+                return f"👤 **Contact not found**: {person_resource_name}"
+
+            contact_details = []
+            
+            # Basic Information
+            contact_details.append("## 👤 Contact Details\n")
+            
+            # Name information
+            names = person.get('names', [])
+            if names:
+                name_info = names[0]
+                display_name = name_info.get('displayName', 'Unknown')
+                given_name = name_info.get('givenName', '')
+                family_name = name_info.get('familyName', '')
+                
+                contact_details.append(f"**Full Name**: {display_name}")
+                if given_name or family_name:
+                    name_parts = []
+                    if given_name:
+                        name_parts.append(f"First: {given_name}")
+                    if family_name:
+                        name_parts.append(f"Last: {family_name}")
+                    contact_details.append(f"**Name Parts**: {', '.join(name_parts)}")
+            
+            # Email addresses
+            emails = person.get('emailAddresses', [])
+            if emails:
+                email_details = []
+                for email in emails:
+                    addr = email.get('value', '')
+                    email_type = email.get('type', 'unknown')
+                    if email.get('metadata', {}).get('primary'):
+                        email_details.append(f"{addr} ({email_type}, primary)")
+                    else:
+                        email_details.append(f"{addr} ({email_type})")
+                contact_details.append(f"**Email**: {', '.join(email_details)}")
+            
+            # Phone numbers
+            phones = person.get('phoneNumbers', [])
+            if phones:
+                phone_details = []
+                for phone in phones:
+                    number = phone.get('value', '')
+                    phone_type = phone.get('type', 'unknown')
+                    if phone.get('metadata', {}).get('primary'):
+                        phone_details.append(f"{number} ({phone_type}, primary)")
+                    else:
+                        phone_details.append(f"{number} ({phone_type})")
+                contact_details.append(f"**Phone**: {', '.join(phone_details)}")
+            
+            # Organizations
+            orgs = person.get('organizations', [])
+            if orgs:
+                org_details = []
+                for org in orgs:
+                    company = org.get('name', '')
+                    title = org.get('title', '')
+                    department = org.get('department', '')
+                    
+                    org_info = []
+                    if company:
+                        org_info.append(company)
+                    if title:
+                        org_info.append(f"Title: {title}")
+                    if department:
+                        org_info.append(f"Dept: {department}")
+                    
+                    if org_info:
+                        org_details.append(" • ".join(org_info))
+                
+                if org_details:
+                    contact_details.append(f"**Organization**: {' | '.join(org_details)}")
+            
+            # Addresses
+            addresses = person.get('addresses', [])
+            if addresses:
+                addr_details = []
+                for addr in addresses:
+                    address_type = addr.get('type', 'unknown')
+                    formatted_value = addr.get('formattedValue', '')
+                    if formatted_value:
+                        addr_details.append(f"{formatted_value} ({address_type})")
+                
+                if addr_details:
+                    contact_details.append(f"**Address**: {' | '.join(addr_details)}")
+            
+            # Birthdays
+            birthdays = person.get('birthdays', [])
+            if birthdays:
+                birthday_details = []
+                for birthday in birthdays:
+                    date_info = birthday.get('date', {})
+                    if date_info:
+                        year = date_info.get('year')
+                        month = date_info.get('month')
+                        day = date_info.get('day')
+                        
+                        if month and day:
+                            date_str = f"{month}/{day}"
+                            if year:
+                                date_str += f"/{year}"
+                            birthday_details.append(date_str)
+                
+                if birthday_details:
+                    contact_details.append(f"**Birthday**: {', '.join(birthday_details)}")
+            
+            # URLs/Websites
+            urls = person.get('urls', [])
+            if urls:
+                url_details = []
+                for url in urls:
+                    url_value = url.get('value', '')
+                    url_type = url.get('type', 'unknown')
+                    if url_value:
+                        url_details.append(f"{url_value} ({url_type})")
+                
+                if url_details:
+                    contact_details.append(f"**Websites**: {', '.join(url_details)}")
+            
+            # Biography/Notes
+            bios = person.get('biographies', [])
+            if bios:
+                bio_text = bios[0].get('value', '')
+                if bio_text:
+                    # Truncate long biographies
+                    if len(bio_text) > 200:
+                        bio_text = bio_text[:197] + "..."
+                    contact_details.append(f"**Notes**: {bio_text}")
+            
+            # Relations
+            relations = person.get('relations', [])
+            if relations:
+                relation_details = []
+                for relation in relations:
+                    person_name = relation.get('person', '')
+                    relation_type = relation.get('type', 'unknown')
+                    if person_name:
+                        relation_details.append(f"{person_name} ({relation_type})")
+                
+                if relation_details:
+                    contact_details.append(f"**Relations**: {', '.join(relation_details)}")
+            
+            # Group memberships
+            memberships = person.get('memberships', [])
+            if memberships:
+                group_details = []
+                for membership in memberships:
+                    group_name = membership.get('contactGroupMembership', {}).get('contactGroupId', '')
+                    if group_name:
+                        group_details.append(group_name)
+                
+                if group_details:
+                    contact_details.append(f"**Groups**: {', '.join(group_details)}")
+            
+            # Resource name
+            contact_details.append(f"**Contact ID**: `{person_resource_name}`")
+            
+            # Join all details
+            response = "\n".join(contact_details)
+            
+            if len(contact_details) <= 2:  # Only header and ID
+                response += "\n\nNo additional contact information available."
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Get contact details failed: {e}")
+            return f"❌ **Error getting contact details**: {str(e)}"
+
+    def list_recent_contacts(self, limit: int = 20) -> str:
+        """
+        List recently added or modified contacts
+        
+        Args:
+            limit: Maximum number of contacts to return
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('people', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Listing recent contacts (limit: {limit})")
+
+            # Get connections (personal contacts)
+            connections_request = service.people().connections().list(
+                resourceName='people/me',
+                pageSize=limit,
+                personFields='names,emailAddresses,phoneNumbers,organizations,metadata',
+                sortOrder='LAST_MODIFIED_DESCENDING'
+            )
+            
+            connections = connections_request.execute()
+            contacts = connections.get('connections', [])
+            
+            if not contacts:
+                return "👥 **No contacts found**. Your contact list may be empty."
+
+            # Get display fields from settings
+            display_fields = [field.strip() for field in self.valves.contact_display_fields.split(',')]
+            
+            response = f"👥 **Recent Contacts** ({len(contacts)} found):\n\n"
+            
+            for contact in contacts:
+                contact_info = []
+                
+                # Name
+                if 'name' in display_fields:
+                    names = contact.get('names', [])
+                    if names:
+                        display_name = names[0].get('displayName', 'Unknown')
+                        contact_info.append(f"**{display_name}**")
+                
+                # Email addresses
+                if 'email' in display_fields:
+                    emails = contact.get('emailAddresses', [])
+                    email_list = []
+                    for email in emails:
+                        addr = email.get('value', '')
+                        if email.get('metadata', {}).get('primary'):
+                            email_list.append(f"{addr} (primary)")
+                        else:
+                            email_list.append(addr)
+                    if email_list:
+                        contact_info.append(f"📧 {', '.join(email_list)}")
+                
+                # Phone numbers
+                if 'phone' in display_fields:
+                    phones = contact.get('phoneNumbers', [])
+                    phone_list = []
+                    for phone in phones:
+                        number = phone.get('value', '')
+                        phone_type = phone.get('type', 'unknown')
+                        phone_list.append(f"{number} ({phone_type})")
+                    if phone_list:
+                        contact_info.append(f"📞 {', '.join(phone_list)}")
+                
+                # Organization
+                if 'organization' in display_fields:
+                    orgs = contact.get('organizations', [])
+                    if orgs:
+                        org = orgs[0]
+                        company = org.get('name', '')
+                        title = org.get('title', '')
+                        org_info = company
+                        if title:
+                            org_info += f" ({title})"
+                        if org_info:
+                            contact_info.append(f"🏢 {org_info}")
+                
+                # Metadata for last modified (if available)
+                metadata = contact.get('metadata', {})
+                sources = metadata.get('sources', [])
+                if sources:
+                    # Look for update time
+                    for source in sources:
+                        update_time = source.get('updateTime')
+                        if update_time:
+                            # Format the timestamp (simplified)
+                            contact_info.append(f"🕒 Modified: {update_time[:10]}")
+                            break
+                
+                # Add resource name for detailed lookup
+                resource_name = contact.get('resourceName', '')
+                if resource_name:
+                    contact_info.append(f"🔗 ID: `{resource_name}`")
+                
+                if contact_info:
+                    response += "• " + " • ".join(contact_info) + "\n"
+                else:
+                    response += "• Contact found but no displayable information\n"
+
+            response += f"\n💡 **Tip**: Use `search_contacts('name')` to find specific contacts or `get_contact_details(ID)` for full details."
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"List recent contacts failed: {e}")
+            return f"❌ **Error listing recent contacts**: {str(e)}"
+
+    def create_contact(self, name: str, email: str, phone: Optional[str] = None, 
+                      organization: Optional[str] = None) -> str:
+        """
+        Create a new contact (write operation - use with caution)
+        
+        Args:
+            name: Full name of the contact
+            email: Primary email address
+            phone: Phone number (optional)
+            organization: Company/organization name (optional)
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('people', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Creating contact: {name} ({email})")
+
+            # Check for existing contact with same email (duplicate detection)
+            existing_check = self.lookup_contact_by_email(email)
+            if "Contact found for" in existing_check:
+                return f"⚠️ **Duplicate contact detected**!\n\nA contact with email `{email}` already exists:\n{existing_check}\n\n💡 **Options**: \n• Use a different email address\n• Add a suffix to the name (e.g., '{name} (Work)')\n• Proceed anyway if this is intentionally a different contact"
+
+            # Build contact data
+            contact_data = {
+                'names': [{'displayName': name}],
+                'emailAddresses': [{'value': email, 'type': 'work'}]
+            }
+
+            # Add phone if provided
+            if phone:
+                contact_data['phoneNumbers'] = [{'value': phone, 'type': 'mobile'}]
+
+            # Add organization if provided
+            if organization:
+                contact_data['organizations'] = [{'name': organization}]
+
+            # Create the contact
+            person = service.people().createContact(body=contact_data).execute()
+
+            if not person:
+                return f"❌ **Contact creation failed** for unknown reasons."
+
+            # Get the created contact details for confirmation
+            resource_name = person.get('resourceName', '')
+            
+            response = f"✅ **Contact created successfully**!\n\n"
+            response += f"**Name**: {name}\n"
+            response += f"**Email**: {email}\n"
+            
+            if phone:
+                response += f"**Phone**: {phone}\n"
+            if organization:
+                response += f"**Organization**: {organization}\n"
+                
+            response += f"**Contact ID**: `{resource_name}`\n"
+            response += f"\n💡 **Tip**: Use `get_contact_details('{resource_name}')` to view full contact information."
+
+            # Log the creation
+            self.log_debug(f"Contact created successfully: {resource_name}")
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Create contact failed: {e}")
+            
+            # Handle specific errors
+            error_str = str(e)
+            if "insufficientPermissions" in error_str:
+                return f"❌ **Permission denied**: You may not have write access to contacts. Check your Google account permissions."
+            elif "quotaExceeded" in error_str:
+                return f"❌ **Quota exceeded**: Too many API requests. Please wait before creating more contacts."
+            elif "invalidArgument" in error_str:
+                return f"❌ **Invalid contact data**: Please check that the name and email are valid."
+            else:
+                return f"❌ **Error creating contact**: {error_str}"
+
     def get_authentication_status(self) -> str:
         """Check current authentication status"""
         try:
@@ -1667,4 +2283,29 @@ def get_todays_schedule() -> str:
     """Get today's schedule with imminent event warnings for daily briefings"""
     tool = Tools()
     return tool.get_todays_schedule()
+
+def search_contacts(query: str, max_results: int = 10) -> str:
+    """Search contacts by name, email, phone, or organization"""
+    tool = Tools()
+    return tool.search_contacts(query, max_results)
+
+def lookup_contact_by_email(email_address: str) -> str:
+    """Find contact by specific email address"""
+    tool = Tools()
+    return tool.lookup_contact_by_email(email_address)
+
+def get_contact_details(person_resource_name: str) -> str:
+    """Get comprehensive details for a specific contact by resource name"""
+    tool = Tools()
+    return tool.get_contact_details(person_resource_name)
+
+def list_recent_contacts(limit: int = 20) -> str:
+    """List recently added or modified contacts"""
+    tool = Tools()
+    return tool.list_recent_contacts(limit)
+
+def create_contact(name: str, email: str, phone: str = None, organization: str = None) -> str:
+    """Create a new contact (write operation - includes duplicate detection)"""
+    tool = Tools()
+    return tool.create_contact(name, email, phone, organization)
       

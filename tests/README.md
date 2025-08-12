@@ -2,7 +2,7 @@
 
 Comprehensive test suite for Google Workspace Tools that allows testing all functions without Open-WebUI.
 
-> ✅ **All tests pass successfully** - Gmail and Calendar functions are fully working and verified.
+> ✅ **All tests pass successfully** - Gmail, Calendar, and Contacts functions are fully working and verified.
 
 ## Quick Start
 
@@ -65,6 +65,7 @@ python test_framework.py  # Framework setup test
 ### Function Test Suites
 - **`test_gmail.py`** - Gmail API function tests
 - **`test_calendar.py`** - Calendar API function tests
+- **`test_contacts.py`** - Contacts API function tests
 
 ### Configuration Files
 - **`credentials.json`** - Your Google Cloud OAuth2 credentials (you create this)
@@ -89,10 +90,18 @@ python test_framework.py  # Framework setup test
 ✅ **search_calendar_events()** - Event search with relevance scoring  
 ✅ **create_event_smart()** - Smart event creation with calendar matching  
 
+### Contacts Tests
+✅ **search_contacts()** - Search contacts by name, email, phone, or organization
+✅ **lookup_contact_by_email()** - Find contact by specific email address  
+✅ **get_contact_details()** - Get comprehensive contact information
+✅ **list_recent_contacts()** - List recently modified contacts
+✅ **create_contact()** - Create new contacts with duplicate detection
+✅ **duplicate_detection()** - Test contact creation duplicate prevention
+
 ### Authentication Tests
 ✅ **get_authentication_status()** - Current auth status  
 ✅ **Token validation** - Automatic token refresh testing  
-✅ **Service access** - Gmail and Calendar API accessibility  
+✅ **Service access** - Gmail, Calendar, and Contacts API accessibility  
 
 ## Usage Examples
 
@@ -102,16 +111,17 @@ python test_runner.py
 
 # Menu appears:
 # 1. 📧 Run Gmail Tests
-# 2. 📅 Run Calendar Tests  
-# 3. 🚀 Run All Tests
-# 4. 🔍 Individual Function Tests
-# 5. 📊 Authentication Status
+# 2. 📅 Run Calendar Tests
+# 3. 👥 Run Contacts Tests
+# 4. 🚀 Run All Tests
+# 5. 🔍 Individual Function Tests
+# 6. 📊 Authentication Status
 ```
 
 ### Quick Test Run
 ```bash
 # Test everything
-python test_gmail.py && python test_calendar.py
+python test_gmail.py && python test_calendar.py && python test_contacts.py
 
 # Test specific function
 python -c "
@@ -136,6 +146,13 @@ result = tools.search_emails("project update", max_results=5)
 print(result)
 
 result = tools.create_event_smart("Test Meeting", "tomorrow 2 PM", calendar_hint="work")
+print(result)
+
+# Test contact functions
+result = tools.search_contacts("john", max_results=5)
+print(result)
+
+result = tools.lookup_contact_by_email("john@example.com")
 print(result)
 ```
 
@@ -169,6 +186,11 @@ print(f.tools.get_authentication_status())
 - Ensure Google Calendar API is enabled
 - Some calendars may be read-only (check with `get_calendars()`)
 
+**"Permission denied" for Contacts:**
+- Ensure Google People API is enabled in Google Cloud Console
+- Check that your OAuth2 credentials include contacts scopes
+- Some contact operations require write permissions
+
 ### Import Errors
 
 **"Cannot import google_workspace_tools":**
@@ -194,15 +216,17 @@ pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-pyt
 
 ### Test Data Cleanup
 
-**Created test events/drafts:**
+**Created test events/drafts/contacts:**
 ```bash
 # Calendar events - delete from Google Calendar interface
 # Gmail drafts - delete from Gmail drafts folder
+# Contacts - delete from Google Contacts interface
 ```
 
 Some tests create real data:
 - Gmail drafts (subjects starting with "Test Draft")
 - Calendar events (titles starting with "TEST EVENT")
+- Contacts (names starting with "Test Contact")
 
 ## Debug Mode
 

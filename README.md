@@ -1,8 +1,8 @@
 # Open-WebUI Google Workspace Tools
 
-**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail, Calendar, Contacts, and Google Tasks functionality.
+**Fully functional and production-ready** Google Workspace integration for Open-WebUI, enabling AI assistants to intelligently manage your digital productivity with Gmail, Calendar, Contacts, Google Tasks, and Google Drive functionality.
 
-> ✅ **Status**: All Gmail, Calendar, Contacts, and Google Tasks functions are fully tested and working perfectly with comprehensive Google Workspace integration.
+> ✅ **Status**: All Gmail, Calendar, Contacts, Google Tasks, and Google Drive functions are fully tested and working perfectly with comprehensive Google Workspace integration. **Complete 5-service integration ready for production use.**
 
 ## Features
 
@@ -16,11 +16,12 @@
 - **Advanced search**: Find emails by content, sender, subject, date ranges, and attachments (`has:attachment`)
 - **Email composition**: Create drafts with proper threading for replies  
 - **Content analysis**: Truncated previews with full content on demand
-- **Attachment management**: Complete attachment handling with download, extraction, and metadata analysis
+- **Attachment management**: Complete attachment handling with download, extraction, and Drive integration
   - Attachment indicators in email listings ("📎 3 files (2.5MB)")
   - Individual file download with size limits and security
   - Bulk extraction with detailed reporting
-  - Organized storage with per-email directories
+  - **Smart Drive uploads** with automatic organization by email content
+  - Organized local storage with per-email directories
 
 ### 🗓️ Calendar Management
 - **Multi-calendar support**: Personal, shared, family, and work calendars
@@ -45,6 +46,18 @@
 - **Completion tracking**: Mark tasks complete with automatic status updates
 - **Bulk operations**: Clear completed tasks (hides them from default view)
 - **Cross-service integration**: Convert emails and calendar events to actionable tasks
+
+### 💾 Google Drive Integration
+- **File management**: Search, browse, and organize files with advanced query support
+- **Smart folder operations**: List, create, and manage folder hierarchies with path-based creation
+- **File transfers**: Download Drive files locally and upload local files to Drive
+- **Email-to-Drive workflows**: Automated attachment uploads with intelligent organization
+- **Storage management**: Monitor Drive quota and usage with visual indicators
+- **Smart organization strategies**:
+  - **Email-organized**: Automatic categorization by sender and content (invoices, taxes, utilities)
+  - **Date-organized**: Hierarchical folder structure by year/month
+  - **Type-organized**: Classification by file type and content
+  - **Hybrid mode**: Smart defaults with manual override capability
 
 ### 🎯 AI-Powered Features
 - **Smart calendar selection**: "Add to family calendar" automatically finds the right calendar
@@ -90,6 +103,20 @@
 - `mark_task_complete()` - Mark tasks as completed with status tracking
 - `clear_completed_tasks()` - Hide completed tasks from default view
 
+### Google Drive Functions (Fully Tested ✅ - Production Ready)
+- `search_drive()` - Search files with Drive query syntax and advanced filtering **[TESTED ✅]**
+- `list_drive_folder()` - Browse folder contents with organized file and folder display **[TESTED ✅]**
+- `get_drive_file_details()` - Comprehensive file metadata with download/view links **[TESTED ✅]**
+- `download_drive_file()` - Download files to local storage with Google Workspace export **[TESTED ✅]**
+- `upload_file_to_drive()` - Upload local files with resumable transfers and size limits **[TESTED ✅]**
+- `create_drive_folder()` - Create folders with hierarchical organization **[TESTED ✅]**
+- `get_drive_folders()` - List folder structures with modification dates **[TESTED ✅]**
+- `upload_attachments_to_drive()` - Bulk email attachment uploads with smart organization **[TESTED ✅]**
+- `upload_attachment_to_drive()` - Individual attachment uploads with custom naming **[TESTED ✅]**
+- `get_drive_storage_info()` - Storage quota monitoring with usage breakdown **[TESTED ✅]**
+
+**🎯 All 10 Drive functions tested and confirmed working in production environment**
+
 ## Quick Start
 
 ### 1. Installation
@@ -103,7 +130,7 @@ pip install -r requirements.txt
 
 ### 2. Google Cloud Setup  
 1. Create project in [Google Cloud Console](https://console.cloud.google.com)
-2. Enable Gmail API and Google Calendar API
+2. Enable Gmail API, Google Calendar API, Google Drive API, Google Tasks API, and People API
 3. Create OAuth2 Desktop Application credentials
 4. Download credentials JSON
 
@@ -145,6 +172,20 @@ get_task_lists()
 get_tasks("@default", show_completed=True)
 create_task("@default", "Review project proposal", due_date="2024-01-15")
 mark_task_complete("task_list_id", "task_id")
+
+# Drive management
+search_drive("type:pdf modified>2024-01-01", max_results=10)
+list_drive_folder("Documents")
+get_drive_file_details("file_id")
+upload_attachments_to_drive("email_id", folder_strategy="auto")
+get_drive_storage_info()
+
+# Drive search examples
+search_drive("invoice")                              # Simple search (auto-converted)
+search_drive("type:pdf")                             # All PDF files
+search_drive("name contains 'report'")               # Files with 'report' in name
+search_drive("modifiedTime > '2024-01-01'")          # Files modified after date
+search_drive("starred and type:spreadsheet")         # Starred spreadsheets
 ```
 
 ## Use Cases
@@ -165,6 +206,9 @@ mark_task_complete("task_list_id", "task_id")
 - **Project tracking**: Link project emails with milestone calendar events
 - **Email to tasks**: Convert email action items into trackable tasks
 - **Calendar to tasks**: Create follow-up tasks from meeting outcomes
+- **Email to Drive**: Automatic attachment organization by content (invoices→Finance, tax docs→Taxes)
+- **Drive organization**: Smart folder creation and file categorization workflows
+- **Document workflows**: Seamless attachment-to-Drive integration with folder intelligence
 
 ### Advanced Automation
 - **Weekly reviews**: Analyze calendar utilization and email follow-ups
@@ -187,7 +231,7 @@ mark_task_complete("task_list_id", "task_id")
 The tool provides extensive customization through Open-WebUI settings:
 
 ### Authentication & Services
-- **enabled_services**: Comma-separated list (default: "gmail,calendar,contacts,tasks")
+- **enabled_services**: Comma-separated list (default: "gmail,calendar,contacts,tasks,drive")
 - **credentials_json**: Your Google Cloud OAuth2 credentials
 - **auth_status**: Current authentication state (read-only)
 
@@ -214,6 +258,13 @@ The tool provides extensive customization through Open-WebUI settings:
 - **default_task_list**: Preferred task list for new tasks (default: "@default")
 - **max_task_results**: Maximum tasks returned in searches (default: 50)
 - **show_completed_by_default**: Include completed tasks in task listing (default: false)
+
+### Google Drive Settings
+- **drive_default_folder**: Base folder for uploads (default: "Open-WebUI Attachments")
+- **max_drive_file_size_mb**: Maximum file size for uploads (default: 100MB)
+- **drive_organization_strategy**: Organization approach (default: "hybrid")
+- **drive_folder_structure**: Folder pattern (default: "email-organized")
+- **drive_storage_root**: Root folder ID for all operations (optional)
 
 ### Advanced Options
 - **debug_mode**: Enable detailed logging for troubleshooting
@@ -252,15 +303,16 @@ Enable debug logging in tool settings to see detailed API interactions and error
 ## Roadmap
 
 ### Planned Features
-- **Google Drive**: File search, organization, and automated workflows
-- **Google Docs/Sheets**: Document creation and spreadsheet automation
-- **Multi-user support**: User isolation and admin controls
-- **Advanced task automation**: Smart task dependencies and project management
+- **Google Docs/Sheets/Slides**: Document creation and spreadsheet automation
+- **Google Meet/Chat**: Communication and meeting management
+- **Multi-user support**: User isolation and admin controls  
+- **Advanced automation**: Smart dependencies and cross-service workflows
 
 ### Future Integrations
-- **Cross-service automation**: Advanced workflows between Gmail, Calendar, Contacts, Tasks, and Drive
-- **AI-powered insights**: Intelligent analysis of communication patterns, schedule optimization, and task prioritization
+- **Enhanced AI workflows**: Advanced cross-service automation with intelligent content analysis
 - **Template systems**: Reusable workflows for common business processes
+- **Analytics and insights**: Communication patterns, productivity metrics, and optimization suggestions
+- **Enterprise features**: Team collaboration, shared resources, and admin controls
 
 ## Contributing
 

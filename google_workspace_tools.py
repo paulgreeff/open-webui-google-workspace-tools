@@ -31,6 +31,7 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves()
         self.gmail_service = None
+        self.drive_service = None
         self.data_dir = "/app/backend/data"
         self.google_dir = os.path.join(self.data_dir, "google_tools")
         self.ensure_directories()
@@ -56,7 +57,7 @@ class Tools:
         
         # Feature Configuration
         enabled_services: str = Field(
-            default="gmail,calendar,contacts,tasks",
+            default="gmail,calendar,contacts,tasks,drive",
             description="Enabled Google services (comma-separated): gmail,calendar,contacts,tasks,drive"
         )
         
@@ -140,6 +141,32 @@ class Tools:
             description="Directory name for storing downloaded attachments (relative to google_tools directory)"
         )
         
+        # Drive Settings
+        drive_default_folder: str = Field(
+            default="Open-WebUI Attachments",
+            description="Default folder name for uploading attachments and files to Google Drive"
+        )
+        
+        max_drive_file_size_mb: int = Field(
+            default=100,
+            description="Maximum file size for uploads to Google Drive in MB (default 100MB)"
+        )
+        
+        drive_organization_strategy: str = Field(
+            default="hybrid",
+            description="Folder organization strategy: 'hybrid' (smart with manual override), 'manual' (user-specified), 'auto' (fully automatic)"
+        )
+        
+        drive_folder_structure: str = Field(
+            default="email-organized",
+            description="Folder structure pattern: 'email-organized' (by sender/subject), 'date-organized' (by date), 'type-organized' (by file type)"
+        )
+        
+        drive_storage_root: str = Field(
+            default="",
+            description="Root folder ID or name for all Open-WebUI file operations (leave empty for Drive root)"
+        )
+        
         # Debug Settings
         debug_mode: bool = Field(
             default=False,
@@ -188,8 +215,7 @@ class Tools:
             ],
             'calendar': ['https://www.googleapis.com/auth/calendar'],
             'drive': [
-                'https://www.googleapis.com/auth/drive.file',
-                'https://www.googleapis.com/auth/drive.readonly'
+                'https://www.googleapis.com/auth/drive'
             ],
             'tasks': ['https://www.googleapis.com/auth/tasks'],
             'contacts': [
@@ -343,6 +369,16 @@ Then click this function again to continue setup.
         except Exception as e:
             self.log_error(f"Authentication failed: {e}")
             return None, f"❌ Authentication error: {str(e)}"
+
+    def _get_drive_service(self):
+        """Get authenticated Google Drive service"""
+        if self.drive_service is None:
+            service, status = self.get_authenticated_service('drive', 'v3')
+            if service is None:
+                return None, status
+            self.drive_service = service
+            self.log_debug("Drive service initialized")
+        return self.drive_service, "✅ Drive service ready"
 
     def get_recent_emails(self, count: Optional[int] = None, hours_back: Optional[int] = None, show_attachments: bool = True) -> str:
         """
@@ -670,17 +706,56 @@ Then click this function again to continue setup.
             self.log_error(f"Extract email body failed: {e}")
             return "Error extracting email content"
 
+    def _get_attachments_from_email_id(self, email_id: str) -> List[Dict[str, Any]]:
+        """Get attachments from email ID by fetching email data first"""
+        try:
+            self.log_debug(f"📎 Getting attachments for email ID: {email_id}")
+            
+            # Get Gmail service
+            service, status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                self.log_error(f"Gmail service not available: {status}")
+                return []
+            
+            # Get email data with full payload
+            email_data = service.users().messages().get(
+                userId='me',
+                id=email_id,
+                format='full'
+            ).execute()
+            
+            payload = email_data.get('payload', {})
+            self.log_debug(f"📎 Email payload keys: {list(payload.keys())}")
+            
+            return self._detect_attachments(payload)
+            
+        except Exception as e:
+            self.log_error(f"Get attachments from email ID failed: {e}")
+            return []
+
     def _detect_attachments(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Detect and extract attachment metadata from email payload"""
         try:
+            self.log_debug(f"📎 Detecting attachments in payload with keys: {list(payload.keys()) if isinstance(payload, dict) else 'Not a dict!'}")
+            
+            if not isinstance(payload, dict):
+                self.log_error(f"📎 ERROR: payload is not a dict, it's a {type(payload)}: {str(payload)[:100]}")
+                return []
             attachments = []
             
             def process_part(part: Dict[str, Any], part_index: int = 0):
                 """Recursively process email parts to find attachments"""
+                self.log_debug(f"📎 Processing part {part_index}: {type(part)} with keys: {list(part.keys()) if isinstance(part, dict) else 'Not a dict!'}")
+                
+                if not isinstance(part, dict):
+                    self.log_error(f"📎 ERROR: part is not a dict, it's a {type(part)}: {str(part)[:100]}")
+                    return
+                
                 filename = None
                 attachment_id = None
                 size = 0
                 mime_type = part.get('mimeType', 'unknown')
+                self.log_debug(f"📎 Part {part_index} MIME type: {mime_type}")
                 
                 # Check if this part has a filename (indicates attachment)
                 headers = part.get('headers', [])
@@ -2147,6 +2222,1097 @@ Then click this function again to continue setup.
         except Exception as e:
             self.log_error(f"Extract all attachments failed: {e}")
             return f"❌ **Error extracting attachments**: {str(e)}"
+
+    # ========== GOOGLE DRIVE FUNCTIONS ==========
+
+    def search_drive_files(self, query: str, max_results: int = 20) -> str:
+        """
+        Search files in Google Drive using query syntax
+        
+        Args:
+            query: Search query (supports Drive search syntax)
+            max_results: Maximum number of files to return
+            
+        Returns:
+            Formatted string with search results
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            self.log_debug(f"🔍 Searching Drive files: '{query}' (max: {max_results})")
+            
+            # Clean and validate query
+            cleaned_query = query.strip()
+            
+            # If query looks like a simple search term with quotes, convert to proper Drive syntax
+            if cleaned_query.startswith('"') and cleaned_query.endswith('"') and cleaned_query.count('"') == 2:
+                # Convert "search term" to name contains 'search term'
+                search_term = cleaned_query[1:-1]  # Remove quotes
+                cleaned_query = f"name contains '{search_term}'"
+                self.log_debug(f"🔧 Converted query to: '{cleaned_query}'")
+            
+            # Build query parameters
+            fields = "nextPageToken,files(id,name,mimeType,size,parents,modifiedTime,webViewLink,owners)"
+            
+            # Execute search
+            results = drive_service.files().list(
+                q=cleaned_query,
+                pageSize=min(max_results, 100),
+                fields=fields,
+                orderBy="modifiedTime desc"
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                return f"📂 **No files found** matching query: '{cleaned_query}'"
+            
+            response = f"📂 **Drive Search Results** (showing {len(files)} files)\n"
+            response += f"**Query**: {cleaned_query}\n\n"
+            
+            for file in files:
+                name = file.get('name', 'Unnamed')
+                file_id = file.get('id', '')
+                mime_type = file.get('mimeType', 'unknown')
+                size = file.get('size', 0)
+                modified = file.get('modifiedTime', '')
+                
+                # Format file type
+                if 'folder' in mime_type:
+                    icon = "📁"
+                    type_str = "Folder"
+                elif 'document' in mime_type:
+                    icon = "📄"
+                    type_str = "Google Doc"
+                elif 'spreadsheet' in mime_type:
+                    icon = "📊"
+                    type_str = "Google Sheet"
+                elif 'presentation' in mime_type:
+                    icon = "📋"
+                    type_str = "Google Slides"
+                elif 'image' in mime_type:
+                    icon = "🖼️"
+                    type_str = "Image"
+                elif 'pdf' in mime_type:
+                    icon = "📄"
+                    type_str = "PDF"
+                else:
+                    icon = "📎"
+                    type_str = "File"
+                
+                # Format size
+                if size and size != '0':
+                    size_mb = int(size) / (1024 * 1024)
+                    size_str = f" ({size_mb:.1f}MB)" if size_mb >= 1 else f" ({int(size) // 1024}KB)"
+                else:
+                    size_str = ""
+                
+                # Format modification date
+                if modified:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                        date_str = dt.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        date_str = modified[:10]
+                else:
+                    date_str = "Unknown"
+                
+                response += f"{icon} **{name}**{size_str}\n"
+                response += f"   📋 Type: {type_str} | 🕒 Modified: {date_str}\n"
+                response += f"   🆔 ID: `{file_id}`\n\n"
+            
+            if len(files) == max_results:
+                response += f"⚠️ **Note**: Results limited to {max_results} files. Use more specific search terms for better results.\n"
+            
+            response += f"\n💡 **Usage**: Use `get_drive_file_details('file_id')` for more information"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive search failed: {e}")
+            return f"❌ **Error searching Drive**: {str(e)}"
+
+    def list_drive_files(self, folder_id: str = None, max_results: int = 50) -> str:
+        """
+        List files in a specific Drive folder or root
+        
+        Args:
+            folder_id: Folder ID to list (None for root folder)
+            max_results: Maximum number of files to return
+            
+        Returns:
+            Formatted string with file listing
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            # Build query
+            if folder_id:
+                query = f"'{folder_id}' in parents and trashed=false"
+                location = f"folder {folder_id}"
+            else:
+                query = "parents in 'root' and trashed=false"
+                location = "root folder"
+            
+            self.log_debug(f"📂 Listing Drive files in {location} (max: {max_results})")
+            
+            # Execute listing
+            fields = "nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink)"
+            results = drive_service.files().list(
+                q=query,
+                pageSize=min(max_results, 100),
+                fields=fields,
+                orderBy="folder,name"
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                return f"📂 **Empty folder** - No files found in {location}"
+            
+            # Separate folders and files
+            folders = [f for f in files if 'folder' in f.get('mimeType', '')]
+            regular_files = [f for f in files if 'folder' not in f.get('mimeType', '')]
+            
+            response = f"📂 **Drive Folder Contents** ({len(files)} items)\n"
+            response += f"**Location**: {location}\n\n"
+            
+            # List folders first
+            if folders:
+                response += "📁 **Folders**:\n"
+                for folder in folders:
+                    name = folder.get('name', 'Unnamed')
+                    folder_id = folder.get('id', '')
+                    response += f"   📁 {name} (`{folder_id}`)\n"
+                response += "\n"
+            
+            # List files
+            if regular_files:
+                response += "📄 **Files**:\n"
+                for file in regular_files:
+                    name = file.get('name', 'Unnamed')
+                    file_id = file.get('id', '')
+                    size = file.get('size', 0)
+                    
+                    # Format size
+                    if size and size != '0':
+                        size_mb = int(size) / (1024 * 1024)
+                        size_str = f" ({size_mb:.1f}MB)" if size_mb >= 1 else f" ({int(size) // 1024}KB)"
+                    else:
+                        size_str = ""
+                    
+                    response += f"   📄 {name}{size_str} (`{file_id}`)\n"
+            
+            response += f"\n💡 **Usage**: Use `get_drive_file_details('file_id')` for file details or `list_drive_files('folder_id')` to browse folders"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive listing failed: {e}")
+            return f"❌ **Error listing Drive files**: {str(e)}"
+
+    def get_drive_file_details(self, file_id: str) -> str:
+        """
+        Get comprehensive details for a specific Drive file
+        
+        Args:
+            file_id: Google Drive file ID
+            
+        Returns:
+            Formatted string with file details
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            self.log_debug(f"📋 Getting Drive file details for: {file_id}")
+            
+            # Get file metadata
+            fields = "id,name,mimeType,size,parents,createdTime,modifiedTime,webViewLink,webContentLink,owners,permissions,description"
+            file_metadata = drive_service.files().get(
+                fileId=file_id,
+                fields=fields
+            ).execute()
+            
+            name = file_metadata.get('name', 'Unnamed')
+            mime_type = file_metadata.get('mimeType', 'unknown')
+            size = file_metadata.get('size', 0)
+            created = file_metadata.get('createdTime', '')
+            modified = file_metadata.get('modifiedTime', '')
+            description = file_metadata.get('description', '')
+            web_view_link = file_metadata.get('webViewLink', '')
+            web_content_link = file_metadata.get('webContentLink', '')
+            owners = file_metadata.get('owners', [])
+            
+            # Format file type
+            if 'folder' in mime_type:
+                icon = "📁"
+                type_str = "Folder"
+            elif 'document' in mime_type:
+                icon = "📄"
+                type_str = "Google Document"
+            elif 'spreadsheet' in mime_type:
+                icon = "📊"
+                type_str = "Google Spreadsheet"
+            elif 'presentation' in mime_type:
+                icon = "📋"
+                type_str = "Google Presentation"
+            elif 'image' in mime_type:
+                icon = "🖼️"
+                type_str = "Image"
+            elif 'pdf' in mime_type:
+                icon = "📄"
+                type_str = "PDF Document"
+            else:
+                icon = "📎"
+                type_str = "File"
+            
+            response = f"{icon} **{name}**\n\n"
+            response += f"**📋 File Details**:\n"
+            response += f"• **Type**: {type_str}\n"
+            response += f"• **ID**: `{file_id}`\n"
+            
+            # Size information
+            if size and size != '0':
+                size_mb = int(size) / (1024 * 1024)
+                if size_mb >= 1:
+                    response += f"• **Size**: {size_mb:.2f} MB\n"
+                else:
+                    response += f"• **Size**: {int(size) // 1024} KB\n"
+            
+            # Dates
+            if created:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    response += f"• **Created**: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                except:
+                    response += f"• **Created**: {created}\n"
+            
+            if modified:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                    response += f"• **Modified**: {dt.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                except:
+                    response += f"• **Modified**: {modified}\n"
+            
+            # Owner information
+            if owners:
+                owner_names = [owner.get('displayName', 'Unknown') for owner in owners]
+                response += f"• **Owner**: {', '.join(owner_names)}\n"
+            
+            # Description
+            if description:
+                response += f"• **Description**: {description}\n"
+            
+            # Links
+            response += f"\n**🔗 Access Links**:\n"
+            if web_view_link:
+                response += f"• **View**: {web_view_link}\n"
+            if web_content_link:
+                response += f"• **Download**: {web_content_link}\n"
+            
+            # Action suggestions
+            response += f"\n**💡 Available Actions**:\n"
+            if 'folder' not in mime_type:
+                response += f"• `download_drive_file('{file_id}', 'local_filename')` - Download file\n"
+            else:
+                response += f"• `list_drive_files('{file_id}')` - Browse folder contents\n"
+            response += f"• `upload_file_to_drive('local_path', '{file_id}', 'filename')` - Upload to this location\n"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive file details failed: {e}")
+            return f"❌ **Error getting file details**: {str(e)}"
+
+    def download_drive_file(self, file_id: str, local_filename: str = None) -> str:
+        """
+        Download a file from Google Drive to local storage
+        
+        Args:
+            file_id: Google Drive file ID
+            local_filename: Local filename (optional, will use Drive filename if not provided)
+            
+        Returns:
+            Status message with download details
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            # Get file metadata first
+            file_metadata = drive_service.files().get(fileId=file_id, fields="name,size,mimeType").execute()
+            drive_filename = file_metadata.get('name', 'unnamed_file')
+            file_size = int(file_metadata.get('size', 0))
+            mime_type = file_metadata.get('mimeType', '')
+            
+            # Check file size limit
+            max_size_bytes = self.valves.max_drive_file_size_mb * 1024 * 1024
+            if file_size > max_size_bytes:
+                return f"❌ **File too large**: {file_size // (1024*1024)}MB exceeds limit of {self.valves.max_drive_file_size_mb}MB"
+            
+            # Use provided filename or default to Drive filename
+            if not local_filename:
+                local_filename = drive_filename
+            
+            # Create downloads directory
+            downloads_dir = os.path.join(self.google_dir, "downloads")
+            os.makedirs(downloads_dir, exist_ok=True)
+            
+            # Full path for downloaded file
+            local_path = os.path.join(downloads_dir, local_filename)
+            
+            self.log_debug(f"⬇️ Downloading Drive file: {drive_filename} ({file_size} bytes)")
+            
+            # Handle Google Workspace files (export as common formats)
+            if 'google-apps' in mime_type:
+                export_map = {
+                    'google-apps.document': 'application/pdf',
+                    'google-apps.spreadsheet': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    'google-apps.presentation': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                }
+                
+                export_mime = None
+                for app_type, export_type in export_map.items():
+                    if app_type in mime_type:
+                        export_mime = export_type
+                        # Update filename extension
+                        if not local_filename.endswith(('.pdf', '.xlsx', '.pptx')):
+                            if 'document' in mime_type:
+                                local_filename += '.pdf'
+                            elif 'spreadsheet' in mime_type:
+                                local_filename += '.xlsx'
+                            elif 'presentation' in mime_type:
+                                local_filename += '.pptx'
+                            local_path = os.path.join(downloads_dir, local_filename)
+                        break
+                
+                if export_mime:
+                    request = drive_service.files().export_media(fileId=file_id, mimeType=export_mime)
+                    download_type = "exported"
+                else:
+                    return f"❌ **Unsupported Google Workspace file type**: {mime_type}"
+            else:
+                # Regular file download
+                request = drive_service.files().get_media(fileId=file_id)
+                download_type = "downloaded"
+            
+            # Download the file
+            with open(local_path, 'wb') as local_file:
+                downloader = request.execute()
+                local_file.write(downloader)
+            
+            # Get actual file size after download
+            actual_size = os.path.getsize(local_path)
+            size_mb = actual_size / (1024 * 1024)
+            
+            response = f"✅ **File {download_type} successfully**\n\n"
+            response += f"📁 **File Details**:\n"
+            response += f"• **Original**: {drive_filename}\n"
+            response += f"• **Local**: {local_filename}\n"
+            response += f"• **Size**: {size_mb:.2f} MB\n"
+            response += f"• **Location**: `{local_path}`\n"
+            response += f"• **Drive ID**: `{file_id}`\n\n"
+            
+            if download_type == "exported":
+                response += f"📄 **Note**: Google Workspace file exported to common format\n"
+            
+            response += f"💡 **Usage**: File is now available locally at the path shown above"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive download failed: {e}")
+            return f"❌ **Error downloading file**: {str(e)}"
+
+    def upload_file_to_drive(self, local_path: str, parent_folder_id: str = None, filename: str = None) -> str:
+        """
+        Upload a local file to Google Drive
+        
+        Args:
+            local_path: Path to local file to upload
+            parent_folder_id: Drive folder ID to upload to (None for root)
+            filename: Custom filename for Drive (optional, uses local filename if not provided)
+            
+        Returns:
+            Status message with upload details
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            # Check if local file exists
+            if not os.path.exists(local_path):
+                return f"❌ **Local file not found**: {local_path}"
+            
+            # Check file size
+            file_size = os.path.getsize(local_path)
+            max_size_bytes = self.valves.max_drive_file_size_mb * 1024 * 1024
+            if file_size > max_size_bytes:
+                size_mb = file_size / (1024 * 1024)
+                return f"❌ **File too large**: {size_mb:.1f}MB exceeds limit of {self.valves.max_drive_file_size_mb}MB"
+            
+            # Determine filename
+            if not filename:
+                filename = os.path.basename(local_path)
+            
+            self.log_debug(f"⬆️ Uploading file to Drive: {filename} ({file_size} bytes)")
+            
+            # Prepare file metadata
+            file_metadata = {'name': filename}
+            if parent_folder_id:
+                file_metadata['parents'] = [parent_folder_id]
+            
+            # Import MediaFileUpload
+            try:
+                from googleapiclient.http import MediaFileUpload
+            except ImportError:
+                return f"❌ **Error**: MediaFileUpload not available. Please install google-api-python-client"
+            
+            # Create media upload object
+            media = MediaFileUpload(local_path, resumable=True)
+            
+            # Upload the file
+            request = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id,name,size,webViewLink,parents'
+            )
+            
+            file_result = request.execute()
+            
+            # Extract upload results
+            uploaded_file_id = file_result.get('id')
+            uploaded_name = file_result.get('name')
+            uploaded_size = int(file_result.get('size', 0))
+            web_view_link = file_result.get('webViewLink', '')
+            
+            # Determine location
+            if parent_folder_id:
+                location = f"folder {parent_folder_id}"
+            else:
+                location = "Drive root"
+            
+            size_mb = uploaded_size / (1024 * 1024)
+            
+            response = f"✅ **File uploaded successfully**\n\n"
+            response += f"📁 **Upload Details**:\n"
+            response += f"• **Local file**: {os.path.basename(local_path)}\n"
+            response += f"• **Drive name**: {uploaded_name}\n"
+            response += f"• **Size**: {size_mb:.2f} MB\n"
+            response += f"• **Location**: {location}\n"
+            response += f"• **Drive ID**: `{uploaded_file_id}`\n"
+            
+            if web_view_link:
+                response += f"• **View link**: {web_view_link}\n"
+            
+            response += f"\n💡 **Available Actions**:\n"
+            response += f"• `get_drive_file_details('{uploaded_file_id}')` - View file details\n"
+            response += f"• `download_drive_file('{uploaded_file_id}', 'new_name')` - Download file\n"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive upload failed: {e}")
+            return f"❌ **Error uploading file**: {str(e)}"
+
+    def create_drive_folder(self, folder_name: str, parent_folder_id: str = None) -> str:
+        """
+        Create a new folder in Google Drive
+        
+        Args:
+            folder_name: Name for the new folder
+            parent_folder_id: Parent folder ID (None for root folder)
+            
+        Returns:
+            Status message with folder details
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            self.log_debug(f"📁 Creating Drive folder: {folder_name}")
+            
+            # Prepare folder metadata
+            folder_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            
+            if parent_folder_id:
+                folder_metadata['parents'] = [parent_folder_id]
+            
+            # Create the folder
+            folder_result = drive_service.files().create(
+                body=folder_metadata,
+                fields='id,name,webViewLink,parents'
+            ).execute()
+            
+            folder_id = folder_result.get('id')
+            folder_name_result = folder_result.get('name')
+            web_view_link = folder_result.get('webViewLink', '')
+            
+            # Determine location
+            if parent_folder_id:
+                location = f"inside folder {parent_folder_id}"
+            else:
+                location = "in Drive root"
+            
+            response = f"✅ **Folder created successfully**\n\n"
+            response += f"📁 **Folder Details**:\n"
+            response += f"• **Name**: {folder_name_result}\n"
+            response += f"• **Location**: {location}\n"
+            response += f"• **Folder ID**: `{folder_id}`\n"
+            
+            if web_view_link:
+                response += f"• **View link**: {web_view_link}\n"
+            
+            response += f"\n💡 **Available Actions**:\n"
+            response += f"• `list_drive_files('{folder_id}')` - Browse folder contents\n"
+            response += f"• `upload_file_to_drive('local_path', '{folder_id}', 'filename')` - Upload files to folder\n"
+            response += f"• `create_drive_folder('subfolder_name', '{folder_id}')` - Create subfolder\n"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive folder creation failed: {e}")
+            return f"❌ **Error creating folder**: {str(e)}"
+
+    def get_drive_folders(self, parent_folder_id: str = None) -> str:
+        """
+        List folders in Drive or within a specific parent folder
+        
+        Args:
+            parent_folder_id: Parent folder ID (None for root level folders)
+            
+        Returns:
+            Formatted string with folder listing
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            # Build query for folders only
+            if parent_folder_id:
+                query = f"'{parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                location = f"folder {parent_folder_id}"
+            else:
+                query = "parents in 'root' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                location = "Drive root"
+            
+            self.log_debug(f"📁 Listing Drive folders in {location}")
+            
+            # Execute query
+            fields = "nextPageToken,files(id,name,modifiedTime,webViewLink)"
+            results = drive_service.files().list(
+                q=query,
+                pageSize=100,
+                fields=fields,
+                orderBy="name"
+            ).execute()
+            
+            folders = results.get('files', [])
+            
+            if not folders:
+                return f"📁 **No folders found** in {location}"
+            
+            response = f"📁 **Drive Folders** ({len(folders)} folders in {location})\n\n"
+            
+            for folder in folders:
+                name = folder.get('name', 'Unnamed')
+                folder_id = folder.get('id', '')
+                modified = folder.get('modifiedTime', '')
+                
+                # Format modification date
+                if modified:
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                        date_str = dt.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        date_str = modified[:10]
+                else:
+                    date_str = "Unknown"
+                
+                response += f"📁 **{name}**\n"
+                response += f"   🆔 ID: `{folder_id}`\n"
+                response += f"   🕒 Modified: {date_str}\n\n"
+            
+            response += f"💡 **Usage**: Use `list_drive_files('folder_id')` to browse folder contents or `create_drive_folder('name', 'parent_id')` to create subfolders"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Drive folder listing failed: {e}")
+            return f"❌ **Error listing folders**: {str(e)}"
+
+    def _find_or_create_folder_path(self, folder_path: str, root_folder_id: str = None) -> str:
+        """
+        Find or create a folder path like 'Documents/Projects/2024'
+        
+        Args:
+            folder_path: Slash-separated folder path
+            root_folder_id: Starting folder ID (None for Drive root)
+            
+        Returns:
+            Final folder ID or error message
+        """
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return None
+            
+            # Split path into components
+            path_parts = [p.strip() for p in folder_path.split('/') if p.strip()]
+            if not path_parts:
+                return root_folder_id or 'root'
+            
+            current_folder_id = root_folder_id
+            
+            for folder_name in path_parts:
+                # Search for existing folder
+                if current_folder_id:
+                    query = f"'{current_folder_id}' in parents and name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                else:
+                    query = f"parents in 'root' and name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                
+                results = drive_service.files().list(q=query, fields="files(id,name)").execute()
+                folders = results.get('files', [])
+                
+                if folders:
+                    # Folder exists, use it
+                    current_folder_id = folders[0]['id']
+                    self.log_debug(f"📁 Found existing folder: {folder_name} ({current_folder_id})")
+                else:
+                    # Create new folder
+                    folder_metadata = {
+                        'name': folder_name,
+                        'mimeType': 'application/vnd.google-apps.folder'
+                    }
+                    
+                    if current_folder_id:
+                        folder_metadata['parents'] = [current_folder_id]
+                    
+                    folder_result = drive_service.files().create(
+                        body=folder_metadata,
+                        fields='id,name'
+                    ).execute()
+                    
+                    current_folder_id = folder_result.get('id')
+                    self.log_debug(f"📁 Created new folder: {folder_name} ({current_folder_id})")
+            
+            return current_folder_id
+            
+        except Exception as e:
+            self.log_error(f"Folder path creation failed: {e}")
+            return None
+
+    def upload_email_attachments_to_drive(self, email_id: str, folder_strategy: str = "auto", target_folder: str = None) -> str:
+        """
+        Upload all attachments from an email to Google Drive with smart organization
+        
+        Args:
+            email_id: Gmail message ID
+            folder_strategy: Organization strategy ('auto', 'manual', 'hybrid')
+            target_folder: Specific folder ID or path for manual strategy
+            
+        Returns:
+            Status message with upload results
+        """
+        try:
+            # First get the email attachments
+            attachments = self._get_attachments_from_email_id(email_id)
+            if not attachments:
+                return f"📎 **No attachments found** in email {email_id}"
+            
+            # Get email details for smart folder organization
+            email_details = self._get_email_details_for_drive_organization(email_id)
+            
+            # Determine target folder based on strategy
+            if folder_strategy == "manual" and target_folder:
+                # Manual specification
+                if target_folder.startswith('/') or '/' in target_folder:
+                    # Path-like specification, find or create folder path
+                    folder_id = self._find_or_create_folder_path(target_folder)
+                else:
+                    # Direct folder ID
+                    folder_id = target_folder
+            else:
+                # Auto or hybrid strategy - smart folder organization
+                folder_id = self._determine_smart_folder(email_details, target_folder)
+            
+            if not folder_id:
+                return f"❌ **Error**: Could not determine target folder for uploads"
+            
+            self.log_debug(f"📤 Uploading {len(attachments)} attachments to folder {folder_id}")
+            
+            uploaded_files = []
+            failed_uploads = []
+            
+            for attachment in attachments:
+                try:
+                    # Get attachment data
+                    if attachment.get('attachment_id'):
+                        attachment_data = self._get_attachment_data(email_id, attachment['attachment_id'])
+                    elif attachment.get('inline_data'):
+                        attachment_data = base64.urlsafe_b64decode(attachment['inline_data'])
+                    else:
+                        attachment_data = None
+                    
+                    if not attachment_data:
+                        failed_uploads.append(f"Could not retrieve: {attachment.get('filename', 'unknown')}")
+                        continue
+                    
+                    # Save attachment temporarily
+                    temp_dir = os.path.join(self.google_dir, "temp_uploads")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    
+                    filename = attachment.get('filename', f"attachment_{len(uploaded_files)}")
+                    temp_path = os.path.join(temp_dir, filename)
+                    
+                    with open(temp_path, 'wb') as f:
+                        f.write(attachment_data)
+                    
+                    # Upload to Drive
+                    upload_result = self.upload_file_to_drive(temp_path, folder_id, filename)
+                    
+                    # Clean up temp file
+                    try:
+                        os.remove(temp_path)
+                    except:
+                        pass
+                    
+                    if "✅" in upload_result:
+                        uploaded_files.append({
+                            'filename': filename,
+                            'size': len(attachment_data),
+                            'status': 'success'
+                        })
+                    else:
+                        failed_uploads.append(f"{filename}: {upload_result}")
+                        
+                except Exception as e:
+                    failed_uploads.append(f"{attachment.get('filename', 'unknown')}: {str(e)}")
+            
+            # Generate response
+            response = f"📤 **Email Attachments Upload Results**\n\n"
+            response += f"**Email ID**: {email_id}\n"
+            response += f"**Target folder**: {folder_id}\n"
+            response += f"**Strategy**: {folder_strategy}\n\n"
+            
+            if uploaded_files:
+                total_size = sum(f['size'] for f in uploaded_files)
+                total_mb = total_size / (1024 * 1024)
+                
+                response += f"✅ **Successfully uploaded** ({len(uploaded_files)} files, {total_mb:.2f}MB):\n"
+                for file_info in uploaded_files:
+                    size_mb = file_info['size'] / (1024 * 1024)
+                    response += f"   📎 {file_info['filename']} ({size_mb:.2f}MB)\n"
+                response += "\n"
+            
+            if failed_uploads:
+                response += f"❌ **Failed uploads** ({len(failed_uploads)} files):\n"
+                for failure in failed_uploads:
+                    response += f"   ⚠️ {failure}\n"
+                response += "\n"
+            
+            response += f"💡 **Usage**: Use `list_drive_files('{folder_id}')` to view uploaded files"
+            
+            return response
+            
+        except Exception as e:
+            self.log_error(f"Email attachments upload failed: {e}")
+            return f"❌ **Error uploading attachments**: {str(e)}"
+
+    def upload_attachment_to_drive(self, email_id: str, attachment_identifier: str, target_folder: str = None, custom_filename: str = None) -> str:
+        """
+        Upload a specific email attachment to Google Drive
+        
+        Args:
+            email_id: Gmail message ID
+            attachment_identifier: Attachment ID or index (0-based)
+            target_folder: Drive folder ID or path (None for auto organization)
+            custom_filename: Custom filename for Drive (optional)
+            
+        Returns:
+            Status message with upload result
+        """
+        try:
+            # Get the specific attachment
+            attachments = self._get_attachments_from_email_id(email_id)
+            if not attachments:
+                return f"📎 **No attachments found** in email {email_id}"
+            
+            # Find the specific attachment
+            attachment = None
+            if attachment_identifier.isdigit():
+                # Index-based selection
+                index = int(attachment_identifier)
+                if 0 <= index < len(attachments):
+                    attachment = attachments[index]
+                else:
+                    return f"❌ **Invalid attachment index**: {index} (available: 0-{len(attachments)-1})"
+            else:
+                # ID-based selection
+                for att in attachments:
+                    if att.get('attachment_id') == attachment_identifier:
+                        attachment = att
+                        break
+                
+                if not attachment:
+                    return f"❌ **Attachment not found**: {attachment_identifier}"
+            
+            # Get attachment data
+            if attachment.get('attachment_id'):
+                attachment_data = self._get_attachment_data(email_id, attachment['attachment_id'])
+            elif attachment.get('inline_data'):
+                attachment_data = base64.urlsafe_b64decode(attachment['inline_data'])
+            else:
+                attachment_data = None
+            
+            if not attachment_data:
+                return f"❌ **Could not retrieve attachment data** for {attachment.get('filename', 'unknown')}"
+            
+            # Determine target folder
+            if target_folder:
+                if target_folder.startswith('/') or '/' in target_folder:
+                    # Path-like specification
+                    folder_id = self._find_or_create_folder_path(target_folder)
+                else:
+                    # Direct folder ID
+                    folder_id = target_folder
+            else:
+                # Auto organization
+                email_details = self._get_email_details_for_drive_organization(email_id)
+                folder_id = self._determine_smart_folder(email_details)
+            
+            if not folder_id:
+                return f"❌ **Error**: Could not determine target folder"
+            
+            # Use custom filename or original
+            filename = custom_filename or attachment.get('filename', 'attachment')
+            
+            # Save attachment temporarily
+            temp_dir = os.path.join(self.google_dir, "temp_uploads")
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_path = os.path.join(temp_dir, filename)
+            
+            with open(temp_path, 'wb') as f:
+                f.write(attachment_data)
+            
+            # Upload to Drive
+            upload_result = self.upload_file_to_drive(temp_path, folder_id, filename)
+            
+            # Clean up temp file
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+            
+            if "✅" in upload_result:
+                size_mb = len(attachment_data) / (1024 * 1024)
+                response = f"✅ **Attachment uploaded successfully**\n\n"
+                response += f"📎 **Attachment Details**:\n"
+                response += f"• **Email ID**: {email_id}\n"
+                response += f"• **Original filename**: {attachment.get('filename', 'unknown')}\n"
+                response += f"• **Drive filename**: {filename}\n"
+                response += f"• **Size**: {size_mb:.2f} MB\n"
+                response += f"• **Target folder**: {folder_id}\n\n"
+                response += upload_result.split('\n\n', 1)[1] if '\n\n' in upload_result else ""
+                return response
+            else:
+                return upload_result
+            
+        except Exception as e:
+            self.log_error(f"Single attachment upload failed: {e}")
+            return f"❌ **Error uploading attachment**: {str(e)}"
+
+    def _get_email_details_for_drive_organization(self, email_id: str) -> Dict[str, str]:
+        """Get email details needed for smart Drive folder organization"""
+        try:
+            service, _ = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                return {}
+            
+            # Get email metadata
+            email = service.users().messages().get(
+                userId='me',
+                id=email_id,
+                format='metadata',
+                metadataHeaders=['From', 'Subject', 'Date']
+            ).execute()
+            
+            headers = {h['name']: h['value'] for h in email.get('payload', {}).get('headers', [])}
+            
+            return {
+                'sender': headers.get('From', '').lower(),
+                'subject': headers.get('Subject', '').lower(),
+                'date': headers.get('Date', ''),
+                'email_id': email_id
+            }
+            
+        except Exception as e:
+            self.log_error(f"Failed to get email details: {e}")
+            return {}
+
+    def _determine_smart_folder(self, email_details: Dict[str, str], manual_override: str = None) -> str:
+        """
+        Determine smart folder organization based on email content and settings
+        
+        Args:
+            email_details: Dictionary with sender, subject, date info
+            manual_override: Manual folder specification for hybrid mode
+            
+        Returns:
+            Folder ID for uploads
+        """
+        try:
+            # Check for manual override first (hybrid mode)
+            if manual_override:
+                if manual_override.startswith('/') or '/' in manual_override:
+                    return self._find_or_create_folder_path(manual_override)
+                else:
+                    return manual_override
+            
+            # Get or create base folder
+            base_folder = self.valves.drive_default_folder
+            if not base_folder:
+                base_folder = "Open-WebUI Attachments"
+            
+            # Smart organization based on drive_folder_structure setting
+            strategy = self.valves.drive_folder_structure
+            
+            if strategy == "email-organized":
+                # Organize by sender domain and subject keywords
+                sender = email_details.get('sender', '')
+                subject = email_details.get('subject', '')
+                
+                # Extract domain from sender
+                if '@' in sender:
+                    domain = sender.split('@')[1].split()[0]  # Handle "Name <email@domain.com>"
+                    domain = domain.replace('>', '').strip()
+                else:
+                    domain = "unknown-sender"
+                
+                # Detect document types from subject
+                subject_lower = subject.lower()
+                if any(keyword in subject_lower for keyword in ['invoice', 'bill', 'payment', 'receipt']):
+                    folder_path = f"{base_folder}/Invoices/{domain}"
+                elif any(keyword in subject_lower for keyword in ['tax', 'irs', '1099', 'w2', 'w-2']):
+                    folder_path = f"{base_folder}/Tax Documents/{domain}"
+                elif any(keyword in subject_lower for keyword in ['utility', 'electric', 'gas', 'water', 'internet']):
+                    folder_path = f"{base_folder}/Utilities/{domain}"
+                elif any(keyword in subject_lower for keyword in ['statement', 'bank', 'credit card', 'account']):
+                    folder_path = f"{base_folder}/Financial/{domain}"
+                else:
+                    folder_path = f"{base_folder}/General/{domain}"
+                    
+            elif strategy == "date-organized":
+                # Organize by year/month
+                try:
+                    from datetime import datetime
+                    date_str = email_details.get('date', '')
+                    if date_str:
+                        # Parse email date (RFC 2822 format)
+                        dt = datetime.strptime(date_str[:25], '%a, %d %b %Y %H:%M:%S')
+                        folder_path = f"{base_folder}/{dt.year}/{dt.strftime('%m-%B')}"
+                    else:
+                        dt = datetime.now()
+                        folder_path = f"{base_folder}/{dt.year}/{dt.strftime('%m-%B')}"
+                except:
+                    # Fallback to current date
+                    from datetime import datetime
+                    dt = datetime.now()
+                    folder_path = f"{base_folder}/{dt.year}/{dt.strftime('%m-%B')}"
+                    
+            elif strategy == "type-organized":
+                # Organize by file type (will be determined by attachment analysis)
+                folder_path = f"{base_folder}/By Type"
+                
+            else:
+                # Default: simple base folder
+                folder_path = base_folder
+            
+            return self._find_or_create_folder_path(folder_path)
+            
+        except Exception as e:
+            self.log_error(f"Smart folder determination failed: {e}")
+            # Fallback to base folder
+            base_folder = self.valves.drive_default_folder or "Open-WebUI Attachments"
+            return self._find_or_create_folder_path(base_folder)
+
+    def get_drive_storage_info_internal(self) -> str:
+        """Internal method to get Google Drive storage usage and quota information"""
+        try:
+            drive_service, status = self._get_drive_service()
+            if drive_service is None:
+                return status
+            
+            self.log_debug("📊 Getting Drive storage information")
+            
+            # Get storage quota information
+            about = drive_service.about().get(fields="storageQuota,user").execute()
+            storage_quota = about.get('storageQuota', {})
+            user_info = about.get('user', {})
+            
+            # Extract storage information
+            limit = int(storage_quota.get('limit', 0))
+            usage = int(storage_quota.get('usage', 0))
+            usage_in_drive = int(storage_quota.get('usageInDrive', 0))
+            usage_in_drive_trash = int(storage_quota.get('usageInDriveTrash', 0))
+            
+            # Convert to human readable format
+            def bytes_to_gb(bytes_val):
+                return bytes_val / (1024**3)
+            
+            if limit > 0:
+                limit_gb = bytes_to_gb(limit)
+                usage_gb = bytes_to_gb(usage)
+                drive_gb = bytes_to_gb(usage_in_drive)
+                trash_gb = bytes_to_gb(usage_in_drive_trash)
+                
+                usage_percent = (usage / limit) * 100
+                
+                response = f"💾 **Google Drive Storage Information**\n\n"
+                response += f"👤 **Account**: {user_info.get('displayName', 'Unknown')}\n"
+                response += f"📧 **Email**: {user_info.get('emailAddress', 'Unknown')}\n\n"
+                response += f"**📊 Storage Usage**:\n"
+                response += f"• **Total Used**: {usage_gb:.2f} GB of {limit_gb:.2f} GB ({usage_percent:.1f}%)\n"
+                response += f"• **Drive Files**: {drive_gb:.2f} GB\n"
+                response += f"• **Trash**: {trash_gb:.2f} GB\n"
+                response += f"• **Available**: {limit_gb - usage_gb:.2f} GB\n\n"
+                
+                # Add usage bar
+                bar_length = 20
+                filled_length = int(bar_length * usage_percent / 100)
+                bar = "█" * filled_length + "░" * (bar_length - filled_length)
+                response += f"**Usage Bar**: [{bar}] {usage_percent:.1f}%\n\n"
+                
+                # Storage warnings
+                if usage_percent > 90:
+                    response += "⚠️ **Warning**: Storage is almost full (>90%)\n"
+                elif usage_percent > 75:
+                    response += "📝 **Note**: Storage is getting full (>75%)\n"
+                
+                return response
+            else:
+                return "💾 **Google Drive Storage**: Unlimited storage account"
+                
+        except Exception as e:
+            self.log_error(f"Drive storage info failed: {e}")
+            return f"❌ **Error getting storage info**: {str(e)}"
 
     def search_contacts(self, query: str, max_results: Optional[int] = None) -> str:
         """
@@ -4517,3 +5683,63 @@ def mark_task_complete(list_id: str, task_id: str) -> str:
     """Mark a task as completed"""
     tool = Tools()
     return tool.mark_task_complete(list_id, task_id)
+
+# ========== DRIVE PUBLIC FUNCTIONS ==========
+
+def search_drive(query: str, max_results: int = 20) -> str:
+    """Search for files in Google Drive using query syntax"""
+    tool = Tools()
+    return tool.search_drive_files(query, max_results)
+
+def list_drive_folder(folder_name_or_id: str = None, max_results: int = 50) -> str:
+    """List files in a specific Drive folder or root folder"""
+    tool = Tools()
+    if folder_name_or_id and not folder_name_or_id.startswith('1'):
+        # Looks like a folder name, try to find it first
+        search_result = tool.search_drive_files(f"name='{folder_name_or_id}' and mimeType='application/vnd.google-apps.folder'", 5)
+        if "No files found" in search_result:
+            return f"📁 **Folder not found**: {folder_name_or_id}"
+        # For simplicity, just use the search result instead of extracting ID
+        return search_result
+    return tool.list_drive_files(folder_name_or_id, max_results)
+
+def get_drive_file_details(file_id: str) -> str:
+    """Get comprehensive details for a specific Drive file by ID"""
+    tool = Tools()
+    return tool.get_drive_file_details(file_id)
+
+def download_drive_file(file_id: str, local_filename: str = None) -> str:
+    """Download a file from Google Drive to local storage"""
+    tool = Tools()
+    return tool.download_drive_file(file_id, local_filename)
+
+def upload_file_to_drive(local_path: str, parent_folder_id: str = None, filename: str = None) -> str:
+    """Upload a local file to Google Drive"""
+    tool = Tools()
+    return tool.upload_file_to_drive(local_path, parent_folder_id, filename)
+
+def create_drive_folder(folder_name: str, parent_folder_id: str = None) -> str:
+    """Create a new folder in Google Drive"""
+    tool = Tools()
+    return tool.create_drive_folder(folder_name, parent_folder_id)
+
+def get_drive_folders(parent_folder_id: str = None) -> str:
+    """List folders in Drive or within a specific parent folder"""
+    tool = Tools()
+    return tool.get_drive_folders(parent_folder_id)
+
+def upload_attachments_to_drive(email_id: str, folder_strategy: str = "auto", target_folder: str = None) -> str:
+    """Upload all email attachments to Google Drive with smart organization"""
+    tool = Tools()
+    return tool.upload_email_attachments_to_drive(email_id, folder_strategy, target_folder)
+
+def upload_attachment_to_drive(email_id: str, attachment_identifier: str, target_folder: str = None, custom_filename: str = None) -> str:
+    """Upload a specific email attachment to Google Drive"""
+    tool = Tools()
+    return tool.upload_attachment_to_drive(email_id, attachment_identifier, target_folder, custom_filename)
+
+def get_drive_storage_info() -> str:
+    """Get Google Drive storage usage and quota information"""
+    tool = Tools()
+    return tool.get_drive_storage_info_internal()
+

@@ -12,11 +12,15 @@
 - Secure credential storage with user isolation
 
 ### 📧 Gmail Intelligence
-- **Smart email reading**: Get recent emails with intelligent filtering
-- **Advanced search**: Find emails by content, sender, subject, and date ranges
+- **Smart email reading**: Get recent emails with intelligent filtering and attachment indicators
+- **Advanced search**: Find emails by content, sender, subject, date ranges, and attachments (`has:attachment`)
 - **Email composition**: Create drafts with proper threading for replies  
 - **Content analysis**: Truncated previews with full content on demand
-- **Attachment organization**: Handle email attachments intelligently
+- **Attachment management**: Complete attachment handling with download, extraction, and metadata analysis
+  - Attachment indicators in email listings ("📎 3 files (2.5MB)")
+  - Individual file download with size limits and security
+  - Bulk extraction with detailed reporting
+  - Organized storage with per-email directories
 
 ### 🗓️ Calendar Management
 - **Multi-calendar support**: Personal, shared, family, and work calendars
@@ -52,11 +56,16 @@
 ## ✅ Verified Working Functionality
 
 ### Gmail Functions (Fully Tested ✅)
-- `get_recent_emails()` - Fetch recent emails with filtering options
-- `search_emails()` - Search emails using Gmail syntax  
-- `get_email_content()` - Get full email content with headers
+- `get_recent_emails()` - Fetch recent emails with filtering options and attachment indicators
+- `search_emails()` - Search emails using Gmail syntax (supports `has:attachment`)
+- `get_email_content()` - Get full email content with headers and attachment summary
 - `create_draft()` - Create draft emails with optional reply threading
 - `create_draft_reply()` - Smart reply drafts with proper message threading
+
+### Attachment Functions (Fully Tested ✅)
+- `list_email_attachments()` - Show detailed attachment metadata with sizes and types
+- `download_email_attachment()` - Download specific attachments with size limits
+- `extract_all_attachments()` - Bulk download with comprehensive reporting
 
 ### Calendar Functions (Fully Tested ✅)
 - `get_calendars()` - List all calendars with access permissions
@@ -109,9 +118,15 @@ get_authentication_status()     # Verify connection
 
 ### 4. Usage Examples
 ```python
-# Email management
-get_recent_emails(count=10, hours_back=24)
-search_emails("project update", max_results=5)
+# Email management with attachment support
+get_recent_emails(count=10, hours_back=24, show_attachments=True)
+search_emails("has:attachment project update", max_results=5)
+get_email_content("email_id")  # Shows attachment summary
+
+# Attachment management
+list_email_attachments("email_id")  # Show all attachments with metadata
+download_email_attachment("email_id", "attachment_id", "custom_name.pdf")
+extract_all_attachments("email_id")  # Download all attachments
 
 # Calendar management  
 get_calendars()
@@ -181,6 +196,10 @@ The tool provides extensive customization through Open-WebUI settings:
 - **default_hours_back**: Hours to look back for recent emails (default: 24)
 - **max_email_content_chars**: Email content truncation limit (default: 2000)
 
+### Attachment Settings
+- **max_attachment_size_mb**: Maximum file size for downloads (default: 10MB)
+- **attachment_storage_dir**: Directory name for attachments (default: "attachments")
+
 ### Calendar Settings
 - **user_timezone**: Your timezone for event creation (default: "Europe/London")
 - **default_event_duration_hours**: Default event length (default: 1)
@@ -203,8 +222,9 @@ The tool provides extensive customization through Open-WebUI settings:
 ## Security and Privacy
 
 ### Data Protection
-- **Local storage**: All credentials and tokens stored locally in your Open-WebUI data directory
-- **User isolation**: Each user's Google data is completely separate
+- **Local storage**: All credentials, tokens, and downloaded attachments stored locally in your Open-WebUI data directory
+- **User isolation**: Each user's Google data and attachments are completely separate
+- **Organized storage**: Attachments stored in secure, per-email directories
 - **Automatic encryption**: Sensitive data is encrypted at rest
 - **No data transmission**: Your Google data never leaves your Open-WebUI instance
 
@@ -234,7 +254,7 @@ Enable debug logging in tool settings to see detailed API interactions and error
 ### Planned Features
 - **Google Drive**: File search, organization, and automated workflows
 - **Google Docs/Sheets**: Document creation and spreadsheet automation
-- **Multi-user support**: Enterprise-ready user isolation and admin controls
+- **Multi-user support**: User isolation and admin controls
 - **Advanced task automation**: Smart task dependencies and project management
 
 ### Future Integrations

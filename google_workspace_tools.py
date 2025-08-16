@@ -129,6 +129,17 @@ class Tools:
             description="Whether to show completed tasks by default in task listings"
         )
         
+        # Attachment Settings
+        max_attachment_size_mb: int = Field(
+            default=10,
+            description="Maximum attachment size to download in MB (default 10MB)"
+        )
+        
+        attachment_storage_dir: str = Field(
+            default="attachments",
+            description="Directory name for storing downloaded attachments (relative to google_tools directory)"
+        )
+        
         # Debug Settings
         debug_mode: bool = Field(
             default=False,
@@ -333,13 +344,14 @@ Then click this function again to continue setup.
             self.log_error(f"Authentication failed: {e}")
             return None, f"❌ Authentication error: {str(e)}"
 
-    def get_recent_emails(self, count: Optional[int] = None, hours_back: Optional[int] = None) -> str:
+    def get_recent_emails(self, count: Optional[int] = None, hours_back: Optional[int] = None, show_attachments: bool = True) -> str:
         """
         Get recent emails from Gmail inbox
         
         Args:
             count: Number of emails to fetch (default from settings)
             hours_back: Hours to look back (default from settings)
+            show_attachments: Whether to show attachment indicators (default True)
         """
         try:
             service, auth_status = self.get_authenticated_service('gmail', 'v1')
@@ -374,23 +386,45 @@ Then click this function again to continue setup.
             emails = []
             for msg in messages[:count]:
                 try:
+                    # Get email format based on attachment detection needs
+                    email_format = 'full' if show_attachments else 'metadata'
+                    metadata_headers = ['Subject', 'From', 'Date', 'To'] if not show_attachments else None
+                    
                     email_data = service.users().messages().get(
                         userId='me',
                         id=msg['id'],
-                        format='metadata',
-                        metadataHeaders=['Subject', 'From', 'Date', 'To']
+                        format=email_format,
+                        metadataHeaders=metadata_headers
                     ).execute()
 
                     headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
                     
-                    emails.append({
+                    email_info = {
                         'id': msg['id'],
                         'subject': headers.get('Subject', 'No Subject'),
                         'from': headers.get('From', 'Unknown Sender'),
                         'date': headers.get('Date', 'Unknown Date'),
                         'snippet': email_data.get('snippet', '')[:200],
                         'unread': 'UNREAD' in email_data.get('labelIds', [])
-                    })
+                    }
+                    
+                    # Add attachment information if requested
+                    if show_attachments:
+                        try:
+                            attachments = self._detect_attachments(email_data['payload'])
+                            if attachments:
+                                total_size = sum(att.get('size', 0) for att in attachments)
+                                email_info['attachment_count'] = len(attachments)
+                                email_info['attachment_size'] = total_size
+                            else:
+                                email_info['attachment_count'] = 0
+                                email_info['attachment_size'] = 0
+                        except Exception as e:
+                            self.log_debug(f"Failed to detect attachments for email {msg['id']}: {e}")
+                            email_info['attachment_count'] = 0
+                            email_info['attachment_size'] = 0
+                    
+                    emails.append(email_info)
                     
                 except Exception as e:
                     self.log_error(f"Failed to get email {msg['id']}: {e}")
@@ -401,13 +435,27 @@ Then click this function again to continue setup.
             
             for i, email in enumerate(emails, 1):
                 unread_indicator = "🔵" if email['unread'] else "⚪"
-                response += f"{i}. {unread_indicator} **{email['subject']}**\n"
+                
+                # Add attachment indicator if enabled and attachments exist
+                attachment_indicator = ""
+                if show_attachments and email.get('attachment_count', 0) > 0:
+                    count = email['attachment_count']
+                    size = email['attachment_size']
+                    size_str = self._format_file_size(size) if size > 0 else "unknown size"
+                    attachment_indicator = f" 📎 {count} file{'s' if count != 1 else ''} ({size_str})"
+                
+                response += f"{i}. {unread_indicator} **{email['subject']}**{attachment_indicator}\n"
                 response += f"   From: {email['from']}\n"
                 response += f"   Date: {email['date']}\n"
                 response += f"   Preview: {email['snippet']}...\n"
                 response += f"   ID: `{email['id']}`\n\n"
 
-            response += "\n💡 Use `get_email_content('email_id')` to read full content of any email."
+            # Add helpful tips
+            tips = ["💡 Use `get_email_content('email_id')` to read full content of any email."]
+            if show_attachments:
+                tips.append("📎 Use `list_email_attachments('email_id')` to see attachment details.")
+            
+            response += "\n" + "\n".join(tips)
             
             return response
 
@@ -415,13 +463,14 @@ Then click this function again to continue setup.
             self.log_error(f"Get recent emails failed: {e}")
             return f"❌ **Error getting emails**: {str(e)}"
 
-    def search_emails(self, query: str, max_results: int = 10) -> str:
+    def search_emails(self, query: str, max_results: int = 10, show_attachments: bool = True) -> str:
         """
         Search emails using Gmail search syntax
         
         Args:
-            query: Gmail search query (e.g., "from:someone@email.com", "subject:urgent")
+            query: Gmail search query (e.g., "from:someone@email.com", "subject:urgent", "has:attachment")
             max_results: Maximum number of results to return
+            show_attachments: Whether to show attachment indicators (default True)
         """
         try:
             service, auth_status = self.get_authenticated_service('gmail', 'v1')
@@ -446,22 +495,44 @@ Then click this function again to continue setup.
             emails = []
             for msg in messages:
                 try:
+                    # Get email format based on attachment detection needs
+                    email_format = 'full' if show_attachments else 'metadata'
+                    metadata_headers = ['Subject', 'From', 'Date'] if not show_attachments else None
+                    
                     email_data = service.users().messages().get(
                         userId='me',
                         id=msg['id'],
-                        format='metadata',
-                        metadataHeaders=['Subject', 'From', 'Date']
+                        format=email_format,
+                        metadataHeaders=metadata_headers
                     ).execute()
 
                     headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
                     
-                    emails.append({
+                    email_info = {
                         'id': msg['id'],
                         'subject': headers.get('Subject', 'No Subject'),
                         'from': headers.get('From', 'Unknown Sender'),
                         'date': headers.get('Date', 'Unknown Date'),
                         'snippet': email_data.get('snippet', '')[:200]
-                    })
+                    }
+                    
+                    # Add attachment information if requested
+                    if show_attachments:
+                        try:
+                            attachments = self._detect_attachments(email_data['payload'])
+                            if attachments:
+                                total_size = sum(att.get('size', 0) for att in attachments)
+                                email_info['attachment_count'] = len(attachments)
+                                email_info['attachment_size'] = total_size
+                            else:
+                                email_info['attachment_count'] = 0
+                                email_info['attachment_size'] = 0
+                        except Exception as e:
+                            self.log_debug(f"Failed to detect attachments for email {msg['id']}: {e}")
+                            email_info['attachment_count'] = 0
+                            email_info['attachment_size'] = 0
+                    
+                    emails.append(email_info)
                     
                 except Exception as e:
                     self.log_error(f"Failed to get email {msg['id']}: {e}")
@@ -471,13 +542,27 @@ Then click this function again to continue setup.
             response = f"🔍 **Search Results** for '{query}' ({len(emails)} found):\n\n"
             
             for i, email in enumerate(emails, 1):
-                response += f"{i}. **{email['subject']}**\n"
+                # Add attachment indicator if enabled and attachments exist
+                attachment_indicator = ""
+                if show_attachments and email.get('attachment_count', 0) > 0:
+                    count = email['attachment_count']
+                    size = email['attachment_size']
+                    size_str = self._format_file_size(size) if size > 0 else "unknown size"
+                    attachment_indicator = f" 📎 {count} file{'s' if count != 1 else ''} ({size_str})"
+                
+                response += f"{i}. **{email['subject']}**{attachment_indicator}\n"
                 response += f"   From: {email['from']}\n"
                 response += f"   Date: {email['date']}\n"
                 response += f"   Preview: {email['snippet']}...\n"
                 response += f"   ID: `{email['id']}`\n\n"
 
-            response += "\n💡 Use `get_email_content('email_id')` to read full content."
+            # Add helpful tips
+            tips = ["💡 Use `get_email_content('email_id')` to read full content."]
+            if show_attachments:
+                tips.append("📎 Use `list_email_attachments('email_id')` to see attachment details.")
+            tips.append("🔍 **Search tip**: Use 'has:attachment' to find emails with attachments.")
+            
+            response += "\n" + "\n".join(tips)
             
             return response
 
@@ -516,6 +601,9 @@ Then click this function again to continue setup.
             if len(body) > self.valves.max_email_content_chars:
                 body = body[:self.valves.max_email_content_chars] + "\n\n[Content truncated...]"
 
+            # Detect attachments
+            attachments = self._detect_attachments(email_data['payload'])
+            
             # Format response
             response = f"📧 **Email Content**\n\n"
             response += f"**Subject**: {headers.get('Subject', 'No Subject')}\n"
@@ -525,6 +613,28 @@ Then click this function again to continue setup.
             response += f"**Message ID**: `{email_id}`\n\n"
             response += "**Content**:\n"
             response += f"{body}\n"
+            
+            # Add attachment summary
+            if attachments:
+                response += f"\n📎 **Attachments** ({len(attachments)} file{'s' if len(attachments) != 1 else ''}):\n"
+                total_size = 0
+                for i, attachment in enumerate(attachments, 1):
+                    filename = attachment['filename']
+                    size = attachment.get('size', 0)
+                    mime_type = attachment['mime_type']
+                    size_str = self._format_file_size(size) if size > 0 else "unknown size"
+                    total_size += size
+                    
+                    response += f"{i}. **{filename}** ({size_str}) - {mime_type}\n"
+                
+                total_size_str = self._format_file_size(total_size) if total_size > 0 else "unknown total size"
+                response += f"\n**Total attachment size**: {total_size_str}\n"
+                response += f"\n💡 **Attachment actions**:\n"
+                response += f"• Use `list_email_attachments('{email_id}')` for detailed attachment info\n"
+                response += f"• Use `extract_all_attachments('{email_id}')` to download all attachments\n"
+                response += f"• Use `download_email_attachment('{email_id}', 'attachment_id')` for specific files"
+            else:
+                response += f"\n📎 **No attachments** found in this email."
 
             return response
 
@@ -559,6 +669,159 @@ Then click this function again to continue setup.
         except Exception as e:
             self.log_error(f"Extract email body failed: {e}")
             return "Error extracting email content"
+
+    def _detect_attachments(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Detect and extract attachment metadata from email payload"""
+        try:
+            attachments = []
+            
+            def process_part(part: Dict[str, Any], part_index: int = 0):
+                """Recursively process email parts to find attachments"""
+                filename = None
+                attachment_id = None
+                size = 0
+                mime_type = part.get('mimeType', 'unknown')
+                
+                # Check if this part has a filename (indicates attachment)
+                headers = part.get('headers', [])
+                for header in headers:
+                    if header.get('name', '').lower() == 'content-disposition':
+                        disposition = header.get('value', '')
+                        if 'attachment' in disposition.lower() or 'filename=' in disposition.lower():
+                            # Extract filename from Content-Disposition header
+                            import re
+                            filename_match = re.search(r'filename[*]?=([^;]+)', disposition)
+                            if filename_match:
+                                filename = filename_match.group(1).strip('"\'')
+                
+                # Also check part filename directly
+                if not filename:
+                    filename = part.get('filename')
+                
+                # Get attachment ID and size from body
+                body = part.get('body', {})
+                if 'attachmentId' in body:
+                    attachment_id = body['attachmentId']
+                    size = body.get('size', 0)
+                elif 'data' in body and filename:
+                    # Small attachment with inline data
+                    size = body.get('size', len(body.get('data', '')))
+                
+                # If we have a filename or attachment ID, this is likely an attachment
+                if filename or attachment_id:
+                    # Skip common inline content that shouldn't be treated as attachments
+                    if mime_type.startswith('text/') and not filename:
+                        return
+                    
+                    attachment_info = {
+                        'filename': filename or f'attachment_{part_index}',
+                        'mime_type': mime_type,
+                        'size': size,
+                        'attachment_id': attachment_id,
+                        'inline_data': body.get('data') if not attachment_id else None,
+                        'part_index': part_index
+                    }
+                    attachments.append(attachment_info)
+                    return
+                
+                # Recursively process sub-parts
+                if 'parts' in part:
+                    for i, sub_part in enumerate(part['parts']):
+                        process_part(sub_part, len(attachments))
+            
+            # Start processing from the root payload
+            if 'parts' in payload:
+                for i, part in enumerate(payload['parts']):
+                    process_part(part, len(attachments))
+            else:
+                # Single part message - check if it's an attachment
+                process_part(payload, 0)
+            
+            self.log_debug(f"Detected {len(attachments)} attachments")
+            return attachments
+            
+        except Exception as e:
+            self.log_error(f"Detect attachments failed: {e}")
+            return []
+
+    def _get_attachment_data(self, message_id: str, attachment_id: str) -> Optional[bytes]:
+        """Fetch attachment data from Gmail API"""
+        try:
+            service, auth_status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                self.log_error(f"Authentication failed: {auth_status}")
+                return None
+
+            self.log_debug(f"Fetching attachment {attachment_id} from message {message_id}")
+
+            # Get attachment data
+            attachment = service.users().messages().attachments().get(
+                userId='me',
+                messageId=message_id,
+                id=attachment_id
+            ).execute()
+
+            # Decode base64 data
+            data = attachment.get('data', '')
+            if data:
+                attachment_data = base64.urlsafe_b64decode(data)
+                self.log_debug(f"Successfully fetched attachment, size: {len(attachment_data)} bytes")
+                return attachment_data
+            else:
+                self.log_error("No data found in attachment response")
+                return None
+
+        except Exception as e:
+            self.log_error(f"Get attachment data failed: {e}")
+            return None
+
+    def _save_attachment(self, attachment_data: bytes, filename: str, message_id: str) -> Optional[str]:
+        """Save attachment data to disk with organized structure"""
+        try:
+            # Create attachment directory structure
+            attachment_dir = os.path.join(self.google_dir, self.valves.attachment_storage_dir)
+            message_dir = os.path.join(attachment_dir, message_id)
+            os.makedirs(message_dir, exist_ok=True)
+            
+            # Sanitize filename
+            import re
+            safe_filename = re.sub(r'[^\w\s.-]', '_', filename)
+            safe_filename = re.sub(r'\s+', '_', safe_filename)
+            
+            # Create full file path
+            file_path = os.path.join(message_dir, safe_filename)
+            
+            # Handle duplicate filenames
+            counter = 1
+            original_path = file_path
+            while os.path.exists(file_path):
+                name, ext = os.path.splitext(safe_filename)
+                file_path = os.path.join(message_dir, f"{name}_{counter}{ext}")
+                counter += 1
+            
+            # Write attachment data
+            with open(file_path, 'wb') as f:
+                f.write(attachment_data)
+            
+            self.log_debug(f"Saved attachment to: {file_path}")
+            return file_path
+            
+        except Exception as e:
+            self.log_error(f"Save attachment failed: {e}")
+            return None
+
+    def _format_file_size(self, size_bytes: int) -> str:
+        """Format file size in human readable format"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB"]
+        import math
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        i = min(i, len(size_names) - 1)
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 1)
+        return f"{s} {size_names[i]}"
 
     def _is_valid_email(self, email: str) -> bool:
         """Basic email validation without regex"""
@@ -1568,6 +1831,322 @@ Then click this function again to continue setup.
         except Exception as e:
             self.log_error(f"Get today's schedule failed: {e}")
             return f"❌ **Error getting today's schedule**: {str(e)}"
+
+    def list_email_attachments(self, email_id: str) -> str:
+        """
+        List all attachments in a specific email with metadata
+        
+        Args:
+            email_id: Gmail message ID
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Listing attachments for email: {email_id}")
+
+            # Get full email to analyze attachments
+            email_data = service.users().messages().get(
+                userId='me',
+                id=email_id,
+                format='full'
+            ).execute()
+
+            # Extract basic email info
+            headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
+            subject = headers.get('Subject', 'No Subject')
+            sender = headers.get('From', 'Unknown Sender')
+
+            # Detect attachments
+            attachments = self._detect_attachments(email_data['payload'])
+            
+            if not attachments:
+                return f"📧 **Email: {subject}**\n\n📎 **No attachments found** in this email."
+
+            # Format response
+            response = f"📧 **Email: {subject}**\n"
+            response += f"**From**: {sender}\n"
+            response += f"**Message ID**: `{email_id}`\n\n"
+            response += f"📎 **Attachments Found** ({len(attachments)}):\n\n"
+            
+            for i, attachment in enumerate(attachments, 1):
+                filename = attachment['filename']
+                mime_type = attachment['mime_type']
+                size = attachment['size']
+                attachment_id = attachment['attachment_id']
+                
+                # Format size
+                size_str = self._format_file_size(size) if size > 0 else "Size unknown"
+                
+                # Check if size exceeds limit
+                size_mb = size / (1024 * 1024) if size > 0 else 0
+                size_warning = ""
+                if size_mb > self.valves.max_attachment_size_mb:
+                    size_warning = f" ⚠️ (Exceeds {self.valves.max_attachment_size_mb}MB limit)"
+                
+                response += f"{i}. **{filename}**\n"
+                response += f"   📄 Type: {mime_type}\n"
+                response += f"   📊 Size: {size_str}{size_warning}\n"
+                
+                if attachment_id:
+                    response += f"   🔗 Attachment ID: `{attachment_id}`\n"
+                    response += f"   💾 Use: `download_email_attachment('{email_id}', '{attachment_id}', '{filename}')`\n"
+                else:
+                    response += f"   📦 Inline data available\n"
+                    response += f"   💾 Use: `download_email_attachment('{email_id}', '{i-1}', '{filename}')`\n"
+                
+                response += "\n"
+
+            response += f"💡 **Tips**:\n"
+            response += f"• Use `download_email_attachment()` to download individual attachments\n"
+            response += f"• Use `extract_all_attachments('{email_id}')` to download all attachments\n"
+            response += f"• Current size limit: {self.valves.max_attachment_size_mb}MB per file"
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"List email attachments failed: {e}")
+            return f"❌ **Error listing attachments**: {str(e)}"
+
+    def download_email_attachment(self, email_id: str, attachment_identifier: str, filename: Optional[str] = None) -> str:
+        """
+        Download a specific attachment from an email
+        
+        Args:
+            email_id: Gmail message ID
+            attachment_identifier: Attachment ID or attachment index (for inline attachments)
+            filename: Optional custom filename for saving
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Downloading attachment {attachment_identifier} from email {email_id}")
+
+            # Get full email to analyze attachments
+            email_data = service.users().messages().get(
+                userId='me',
+                id=email_id,
+                format='full'
+            ).execute()
+
+            # Extract basic email info
+            headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
+            subject = headers.get('Subject', 'No Subject')
+
+            # Detect attachments
+            attachments = self._detect_attachments(email_data['payload'])
+            
+            if not attachments:
+                return f"❌ **No attachments found** in email: {subject}"
+
+            # Find the specific attachment
+            target_attachment = None
+            
+            # Try to match by attachment ID first
+            for attachment in attachments:
+                if attachment.get('attachment_id') == attachment_identifier:
+                    target_attachment = attachment
+                    break
+            
+            # If no match by ID, try by index for inline attachments
+            if not target_attachment:
+                try:
+                    index = int(attachment_identifier)
+                    if 0 <= index < len(attachments):
+                        target_attachment = attachments[index]
+                except ValueError:
+                    pass
+            
+            if not target_attachment:
+                attachment_list = []
+                for i, att in enumerate(attachments):
+                    att_id = att.get('attachment_id', f"index_{i}")
+                    attachment_list.append(f"  • {att['filename']} (ID: `{att_id}`)")
+                
+                return f"❌ **Attachment not found**: `{attachment_identifier}`\n\n**Available attachments**:\n" + "\n".join(attachment_list)
+
+            # Use provided filename or original filename
+            save_filename = filename or target_attachment['filename']
+            
+            # Check size limit
+            size_mb = target_attachment['size'] / (1024 * 1024) if target_attachment['size'] > 0 else 0
+            if size_mb > self.valves.max_attachment_size_mb:
+                return f"❌ **File too large**: {self._format_file_size(target_attachment['size'])} exceeds limit of {self.valves.max_attachment_size_mb}MB"
+
+            # Get attachment data
+            attachment_data = None
+            
+            if target_attachment.get('attachment_id'):
+                # Large attachment - fetch via API
+                attachment_data = self._get_attachment_data(email_id, target_attachment['attachment_id'])
+            elif target_attachment.get('inline_data'):
+                # Small inline attachment
+                try:
+                    attachment_data = base64.urlsafe_b64decode(target_attachment['inline_data'])
+                except Exception as e:
+                    self.log_error(f"Failed to decode inline attachment data: {e}")
+                    return f"❌ **Error decoding attachment data**: {str(e)}"
+            
+            if not attachment_data:
+                return f"❌ **Failed to retrieve attachment data** for: {target_attachment['filename']}"
+
+            # Save attachment
+            saved_path = self._save_attachment(attachment_data, save_filename, email_id)
+            
+            if not saved_path:
+                return f"❌ **Failed to save attachment**: {save_filename}"
+
+            # Format response
+            response = f"✅ **Attachment Downloaded Successfully**\n\n"
+            response += f"📧 **Email**: {subject}\n"
+            response += f"📎 **File**: {target_attachment['filename']}\n"
+            response += f"📄 **Type**: {target_attachment['mime_type']}\n"
+            response += f"📊 **Size**: {self._format_file_size(target_attachment['size'])}\n"
+            response += f"💾 **Saved to**: `{saved_path}`\n"
+            response += f"🔗 **Email ID**: `{email_id}`"
+            
+            return response
+
+        except Exception as e:
+            self.log_error(f"Download email attachment failed: {e}")
+            return f"❌ **Error downloading attachment**: {str(e)}"
+
+    def extract_all_attachments(self, email_id: str) -> str:
+        """
+        Extract and download all attachments from an email
+        
+        Args:
+            email_id: Gmail message ID
+        """
+        try:
+            service, auth_status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                return auth_status
+
+            self.log_debug(f"Extracting all attachments from email: {email_id}")
+
+            # Get full email to analyze attachments
+            email_data = service.users().messages().get(
+                userId='me',
+                id=email_id,
+                format='full'
+            ).execute()
+
+            # Extract basic email info
+            headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
+            subject = headers.get('Subject', 'No Subject')
+            sender = headers.get('From', 'Unknown Sender')
+
+            # Detect attachments
+            attachments = self._detect_attachments(email_data['payload'])
+            
+            if not attachments:
+                return f"📧 **Email: {subject}**\n\n📎 **No attachments found** in this email."
+
+            # Track results
+            successful_downloads = []
+            failed_downloads = []
+            skipped_files = []
+            total_size = 0
+
+            response = f"📧 **Email: {subject}**\n"
+            response += f"**From**: {sender}\n"
+            response += f"**Message ID**: `{email_id}`\n\n"
+            response += f"📦 **Extracting {len(attachments)} attachment(s)**...\n\n"
+
+            for i, attachment in enumerate(attachments, 1):
+                filename = attachment['filename']
+                size = attachment['size']
+                mime_type = attachment['mime_type']
+                
+                # Check size limit
+                size_mb = size / (1024 * 1024) if size > 0 else 0
+                if size_mb > self.valves.max_attachment_size_mb:
+                    skipped_files.append({
+                        'filename': filename,
+                        'reason': f"Exceeds {self.valves.max_attachment_size_mb}MB limit ({self._format_file_size(size)})"
+                    })
+                    continue
+
+                try:
+                    # Get attachment data
+                    attachment_data = None
+                    
+                    if attachment.get('attachment_id'):
+                        # Large attachment - fetch via API
+                        attachment_data = self._get_attachment_data(email_id, attachment['attachment_id'])
+                    elif attachment.get('inline_data'):
+                        # Small inline attachment
+                        attachment_data = base64.urlsafe_b64decode(attachment['inline_data'])
+                    
+                    if not attachment_data:
+                        failed_downloads.append({
+                            'filename': filename,
+                            'reason': 'Failed to retrieve attachment data'
+                        })
+                        continue
+
+                    # Save attachment
+                    saved_path = self._save_attachment(attachment_data, filename, email_id)
+                    
+                    if saved_path:
+                        successful_downloads.append({
+                            'filename': filename,
+                            'size': size,
+                            'mime_type': mime_type,
+                            'path': saved_path
+                        })
+                        total_size += size
+                    else:
+                        failed_downloads.append({
+                            'filename': filename,
+                            'reason': 'Failed to save to disk'
+                        })
+
+                except Exception as e:
+                    self.log_error(f"Failed to extract attachment {filename}: {e}")
+                    failed_downloads.append({
+                        'filename': filename,
+                        'reason': str(e)
+                    })
+
+            # Format results
+            if successful_downloads:
+                response += f"✅ **Successfully Downloaded** ({len(successful_downloads)} files, {self._format_file_size(total_size)} total):\n"
+                for download in successful_downloads:
+                    response += f"• **{download['filename']}** ({self._format_file_size(download['size'])})\n"
+                    response += f"  📄 {download['mime_type']}\n"
+                    response += f"  💾 `{download['path']}`\n\n"
+
+            if skipped_files:
+                response += f"⚠️ **Skipped Files** ({len(skipped_files)}):\n"
+                for skip in skipped_files:
+                    response += f"• **{skip['filename']}** - {skip['reason']}\n"
+                response += "\n"
+
+            if failed_downloads:
+                response += f"❌ **Failed Downloads** ({len(failed_downloads)}):\n"
+                for fail in failed_downloads:
+                    response += f"• **{fail['filename']}** - {fail['reason']}\n"
+                response += "\n"
+
+            # Summary
+            total_attachments = len(attachments)
+            response += f"📊 **Summary**:\n"
+            response += f"• Total attachments: {total_attachments}\n"
+            response += f"• Successfully downloaded: {len(successful_downloads)}\n"
+            response += f"• Skipped (size limit): {len(skipped_files)}\n"
+            response += f"• Failed: {len(failed_downloads)}\n"
+            response += f"• Total downloaded size: {self._format_file_size(total_size)}"
+
+            return response
+
+        except Exception as e:
+            self.log_error(f"Extract all attachments failed: {e}")
+            return f"❌ **Error extracting attachments**: {str(e)}"
 
     def search_contacts(self, query: str, max_results: Optional[int] = None) -> str:
         """
@@ -3736,15 +4315,15 @@ def get_authentication_status() -> str:
     tool = Tools()
     return tool.get_authentication_status()
 
-def get_recent_emails(count: int = 20, hours_back: int = 24) -> str:
-    """Get recent emails from Gmail inbox"""
+def get_recent_emails(count: int = 20, hours_back: int = 24, show_attachments: bool = True) -> str:
+    """Get recent emails from Gmail inbox with optional attachment indicators"""
     tool = Tools()
-    return tool.get_recent_emails(count, hours_back)
+    return tool.get_recent_emails(count, hours_back, show_attachments)
 
-def search_emails(query: str, max_results: int = 10) -> str:
-    """Search emails using Gmail search syntax"""
+def search_emails(query: str, max_results: int = 10, show_attachments: bool = True) -> str:
+    """Search emails using Gmail search syntax (use 'has:attachment' to find emails with attachments)"""
     tool = Tools()
-    return tool.search_emails(query, max_results)
+    return tool.search_emails(query, max_results, show_attachments)
 
 def get_email_content(email_id: str) -> str:
     """Get full content of a specific email by ID"""
@@ -3799,6 +4378,22 @@ def create_draft_reply(message_id: str, body: str) -> str:
     except Exception as e:
         tool.log_error(f"Create draft reply failed: {e}")
         return f"❌ **Error creating reply draft**: {str(e)}"
+
+# Attachment functions
+def list_email_attachments(email_id: str) -> str:
+    """List all attachments in a specific email with metadata"""
+    tool = Tools()
+    return tool.list_email_attachments(email_id)
+
+def download_email_attachment(email_id: str, attachment_identifier: str, filename: str = None) -> str:
+    """Download a specific attachment from an email by ID or index"""
+    tool = Tools()
+    return tool.download_email_attachment(email_id, attachment_identifier, filename)
+
+def extract_all_attachments(email_id: str) -> str:
+    """Extract and download all attachments from an email"""
+    tool = Tools()
+    return tool.extract_all_attachments(email_id)
 
 # Calendar functions
 def get_calendars() -> str:

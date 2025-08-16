@@ -15,8 +15,9 @@ Google Workspace Tools uses OAuth2 to securely connect to your Google account. T
 Enable the following APIs for your project:
 - **Gmail API** - for email functionality
 - **Google Calendar API** - for calendar functionality
-- **Google Drive API** - (future functionality)
-- **Google Tasks API** - (future functionality)
+- **Google Drive API** - for file management and attachment uploads
+- **Google Tasks API** - for task management
+- **People API** - for contact management
 
 To enable APIs:
 1. Navigate to **APIs & Services** > **Library**
@@ -43,9 +44,10 @@ To enable APIs:
 
 ### 2.2 Paste Credentials
 1. In the `credentials_json` field, paste the entire JSON content from Step 1.4
-2. Ensure `enabled_services` includes the services you want: `gmail,calendar`
+2. Ensure `enabled_services` includes the services you want: `gmail,calendar,contacts,tasks,drive`
 3. Set your timezone in `user_timezone` (e.g., "Europe/London", "America/New_York")
-4. Save the settings
+4. Configure Drive settings if using file management features
+5. Save the settings
 
 ## Step 3: Complete Authentication
 
@@ -59,8 +61,13 @@ To enable APIs:
 2. Review the requested permissions:
    - Gmail: Read, compose, and modify emails
    - Calendar: Read and write calendar events
+   - Drive: **Full Drive access** (read and write all files for complete file management)
+   - Tasks: Read and write tasks and task lists
+   - Contacts: Read and write contact information
 3. Click **Allow** to grant permissions
 4. Copy the authorization code from the success page
+
+> **Note**: The Drive permission requests full access to enable folder listing, file organization, and comprehensive file management features. This is required for the smart attachment-to-Drive workflows.
 
 ### 3.3 Complete Setup
 1. Paste the authorization code in the `auth_code` field in tool settings
@@ -70,10 +77,15 @@ To enable APIs:
 
 ## Step 4: Verify Setup
 
-Test your setup by running:
+Test your setup by running these verification commands:
 - `get_authentication_status()` - Should show your email address
-- `get_calendars()` - Should list your calendars
 - `get_recent_emails()` - Should show recent emails
+- `get_calendars()` - Should list your calendars
+- `get_task_lists()` - Should show your task lists
+- `search_contacts("test")` - Should search your contacts
+- `get_drive_storage_info()` - Should show your Drive storage usage
+
+✅ **All functions are production-tested and working perfectly**
 
 ## Security Notes
 

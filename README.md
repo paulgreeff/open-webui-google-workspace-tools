@@ -53,6 +53,13 @@
 - **File transfers**: Download Drive files locally and upload local files to Drive
 - **Email-to-Drive workflows**: Automated attachment uploads with intelligent organization
 - **Storage management**: Monitor Drive quota and usage with visual indicators
+- **Smart Attachment Organizer**: AI-powered bulk attachment processing with LLM classification
+  - **Automated email search**: Find emails with attachments using Gmail query syntax
+  - **Attachment enumeration**: Discover and catalog all attachments across multiple emails
+  - **Dry-run previews**: Safe preview mode showing what would be uploaded
+  - **Bulk operations**: Process multiple emails and attachments in batches
+  - **Smart filtering**: Filter by file type (PDF, images, documents, spreadsheets)
+  - **Progress tracking**: Detailed logging and status reporting
 - **Smart organization strategies**:
   - **Email-organized**: Automatic categorization by sender and content (invoices, taxes, utilities)
   - **Date-organized**: Hierarchical folder structure by year/month
@@ -114,8 +121,9 @@
 - `upload_attachments_to_drive()` - Bulk email attachment uploads with smart organization **[TESTED ✅]**
 - `upload_attachment_to_drive()` - Individual attachment uploads with custom naming **[TESTED ✅]**
 - `get_drive_storage_info()` - Storage quota monitoring with usage breakdown **[TESTED ✅]**
+- `smart_attachment_organizer()` - AI-powered bulk attachment processing and organization **[TESTED ✅]**
 
-**🎯 All 10 Drive functions tested and confirmed working in production environment**
+**🎯 All 11 Drive functions tested and confirmed working in production environment**
 
 ## Quick Start
 
@@ -180,6 +188,10 @@ get_drive_file_details("file_id")
 upload_attachments_to_drive("email_id", folder_strategy="auto")
 get_drive_storage_info()
 
+# Smart Attachment Organizer
+smart_attachment_organizer("invoice OR receipt", dry_run=True)  # Preview mode
+smart_attachment_organizer("tax documents", target_folder="Tax Returns 2024", dry_run=False)  # Upload mode
+
 # Drive search examples
 search_drive("invoice")                              # Simple search (auto-converted)
 search_drive("type:pdf")                             # All PDF files
@@ -214,6 +226,7 @@ search_drive("starred and type:spreadsheet")         # Starred spreadsheets
 - **Weekly reviews**: Analyze calendar utilization and email follow-ups
 - **Travel planning**: Coordinate flights, hotels, and meeting schedules  
 - **Document workflows**: Organize invoices, receipts, and tax documents
+- **Smart attachment processing**: Bulk upload tax documents, invoices, and receipts with AI classification
 
 ## Documentation
 

@@ -557,6 +557,95 @@ Customize task management behavior:
 - Date searches need quotes: `modifiedTime > '2024-01-01'` not `modifiedTime > 2024-01-01`
 - For exact matches use `name = 'filename'`, for partial use `name contains 'text'`
 
+## Smart Attachment Organizer
+
+### Overview
+
+The Smart Attachment Organizer solves the common problem of AI models struggling with ID management by providing a single function that automates email search, attachment discovery, and bulk uploads to Drive.
+
+### Basic Usage
+
+**Preview attachments (safe mode):**
+```python
+smart_attachment_organizer("invoice OR receipt", dry_run=True)
+```
+- Shows what would be uploaded without actually uploading
+- Provides comprehensive preview with email details and attachment summaries
+
+**Upload tax documents:**
+```python
+smart_attachment_organizer(
+    search_query="tax OR invoice OR receipt",
+    target_folder="Tax Returns 2024",
+    dry_run=False,
+    max_emails=20,
+    attachment_filter="pdf"
+)
+```
+
+**Process specific attachments with date filtering:**
+```python
+smart_attachment_organizer(
+    search_query='subject:"Tshwane Invoice" has:attachment after:2024/03/31',
+    target_folder="Tax Return 2024-2025 SA",
+    dry_run=False
+)
+```
+
+### Parameters
+
+- **search_query**: Gmail search syntax (e.g., "invoice", "has:attachment project alpha")
+- **target_folder**: Drive folder name, path, or ID (None for dry-run only)
+- **dry_run**: If True, shows preview without uploading (default: True)
+- **max_emails**: Maximum emails to process (1-50, default: 10)
+- **attachment_filter**: File type filter ("pdf", "image", "document", "spreadsheet")
+- **date_range_days**: Limit to emails from last N days (default: 30, ignored if search has date filters)
+
+### Advanced Examples
+
+**Bulk tax document organization:**
+```python
+# Preview first
+smart_attachment_organizer("tax document OR invoice OR receipt", dry_run=True)
+
+# Then upload with filtering
+smart_attachment_organizer(
+    search_query="tax document OR invoice OR receipt",
+    target_folder="Tax Documents/2024",
+    attachment_filter="pdf",
+    max_emails=50,
+    dry_run=False
+)
+```
+
+**Project document management:**
+```python
+smart_attachment_organizer(
+    search_query="project alpha has:attachment",
+    target_folder="Projects/Alpha/Documents",
+    attachment_filter="pdf",
+    date_range_days=90,
+    dry_run=False
+)
+```
+
+### Features
+
+- **Automated email search** with Gmail query syntax
+- **Attachment enumeration** across multiple emails  
+- **Smart filtering** by file type
+- **Batch processing** for efficiency
+- **Progress tracking** with detailed logging
+- **Error handling** with comprehensive reporting
+- **Gmail API resilience** handling volatile attachment IDs
+
+### Success Indicators
+
+✅ **Dry-run shows detailed preview** with email and attachment information
+✅ **Upload mode shows progress** for each attachment
+✅ **Success rate reported** at the end (aim for 100%)
+✅ **Files appear in target Drive folder** after completion
+
 ## Getting More Help
 
 For additional support:

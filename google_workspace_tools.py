@@ -167,6 +167,58 @@ class Tools:
             description="Root folder ID or name for all Open-WebUI file operations (leave empty for Drive root)"
         )
         
+        # Smart Organizer Settings
+        organizer_batch_size: int = Field(
+            default=3,
+            description="Emails per LLM batch call for attachment classification (1-10)"
+        )
+        
+        organizer_email_context_chars: int = Field(
+            default=1500,
+            description="Maximum email body characters for LLM context"
+        )
+        
+        organizer_enable_progress_logging: bool = Field(
+            default=True,
+            description="Show detailed progress in debug logs during organization"
+        )
+        
+        # LLM Integration Settings
+        llm_enabled: bool = Field(
+            default=False,
+            description="Enable AI-powered attachment classification"
+        )
+        
+        llm_provider: str = Field(
+            default="openai",
+            description="LLM provider: 'openai', 'ollama', 'anthropic'"
+        )
+        
+        llm_api_url: str = Field(
+            default="",
+            description="Custom LLM API endpoint (for Ollama/custom providers)"
+        )
+        
+        llm_api_key: str = Field(
+            default="",
+            description="LLM API key (leave empty for local providers like Ollama)"
+        )
+        
+        llm_model: str = Field(
+            default="gpt-3.5-turbo",
+            description="LLM model name (e.g., gpt-3.5-turbo, llama2, claude-3-haiku)"
+        )
+        
+        llm_confidence_threshold: float = Field(
+            default=0.7,
+            description="Minimum confidence score for auto-upload (0.0-1.0)"
+        )
+        
+        llm_timeout_seconds: int = Field(
+            default=30,
+            description="LLM API timeout in seconds"
+        )
+        
         # Debug Settings
         debug_mode: bool = Field(
             default=False,
@@ -606,17 +658,62 @@ Then click this function again to continue setup.
             self.log_error(f"Search emails failed: {e}")
             return f"❌ **Error searching emails**: {str(e)}"
 
-    def get_email_content(self, email_id: str) -> str:
+    def get_email_content(self, email_id: str = None, subject_contains: str = None, from_sender: str = None) -> str:
         """
-        Get full content of a specific email
+        Get full content of a specific email - supports smart searching
         
         Args:
-            email_id: Gmail message ID
+            email_id: Gmail message ID (if provided, other params ignored)
+            subject_contains: Search for emails containing this text in subject
+            from_sender: Search for emails from this sender
+            
+        Note: Can combine subject_contains and from_sender for precise matching
         """
         try:
             service, auth_status = self.get_authenticated_service('gmail', 'v1')
             if not service:
                 return auth_status
+
+            # Smart email resolution
+            if not email_id and (subject_contains or from_sender):
+                # Search for emails using smart criteria
+                matching_emails = self._search_emails_smart(subject_contains, from_sender, max_results=5)
+                
+                if not matching_emails:
+                    search_desc = []
+                    if subject_contains:
+                        search_desc.append(f"subject containing '{subject_contains}'")
+                    if from_sender:
+                        search_desc.append(f"from '{from_sender}'")
+                    return f"📧 **No emails found** matching criteria: {' and '.join(search_desc)}"
+                
+                elif len(matching_emails) == 1:
+                    # Perfect match - use this email
+                    email_id = matching_emails[0]['id']
+                    self.log_debug(f"🎯 Smart resolution: Found single match for email_id: {email_id}")
+                
+                else:
+                    # Multiple matches - show options
+                    search_desc = []
+                    if subject_contains:
+                        search_desc.append(f"subject containing '{subject_contains}'")
+                    if from_sender:
+                        search_desc.append(f"from '{from_sender}'")
+                    
+                    response = f"📧 **Found {len(matching_emails)} emails** matching criteria: {' and '.join(search_desc)}\n\n"
+                    response += "**Please be more specific or use email ID:**\n"
+                    
+                    for i, email in enumerate(matching_emails, 1):
+                        response += f"{i}. **'{email['subject']}'**\n"
+                        response += f"   From: {email['sender']}\n"
+                        response += f"   Date: {email['date']}\n"
+                        response += f"   ID: `{email['id']}`\n\n"
+                    
+                    response += "**Usage**: `get_email_content('email_id')` or use more specific search criteria."
+                    return response
+            
+            elif not email_id:
+                return "❌ **Missing parameter**: Please provide either email_id or search criteria (subject_contains/from_sender)"
 
             self.log_debug(f"Getting content for email: {email_id}")
 
@@ -918,6 +1015,147 @@ Then click this function again to continue setup.
             return False
             
         return True
+
+    # Smart Parameter Resolvers
+    def _resolve_task_list_id(self, identifier: str) -> str:
+        """Convert task list name to ID if needed"""
+        try:
+            # If it looks like an ID already, return as-is
+            if len(identifier) > 40 or identifier.startswith('@') or identifier.count('_') > 2:
+                return identifier
+            
+            # Search by name
+            service, auth_status = self.get_authenticated_service('tasks', 'v1')
+            if not service:
+                return identifier  # Fallback to original
+                
+            task_lists = service.tasklists().list().execute()
+            for task_list in task_lists.get('items', []):
+                title = task_list.get('title', '').lower()
+                if identifier.lower() in title:
+                    self.log_debug(f"Resolved task list '{identifier}' to ID: {task_list['id']}")
+                    return task_list['id']
+            
+            return identifier  # Fallback if no match found
+        except Exception as e:
+            self.log_debug(f"Error resolving task list ID: {e}")
+            return identifier  # Fallback
+
+    def _resolve_attachment_identifier(self, email_id: str, identifier: str) -> str:
+        """Convert attachment name/position to index"""
+        try:
+            # If it's already an integer index, return as string
+            if isinstance(identifier, int):
+                return str(identifier)
+            
+            if identifier.isdigit():
+                return identifier
+            
+            # Handle position words
+            position_map = {
+                'first': '0', 'second': '1', 'third': '2', 'fourth': '3', 'fifth': '4',
+                'last': None,  # Will be resolved below
+                '1st': '0', '2nd': '1', '3rd': '2', '4th': '3', '5th': '4'
+            }
+            
+            if identifier.lower() in position_map:
+                if identifier.lower() == 'last':
+                    # Get attachments to find last index
+                    attachments = self._get_attachments_from_email_id(email_id)
+                    if attachments:
+                        return str(len(attachments) - 1)
+                    return '0'
+                return position_map[identifier.lower()]
+            
+            # Find by filename (partial match)
+            attachments = self._get_attachments_from_email_id(email_id)
+            for i, att in enumerate(attachments):
+                filename = att.get('filename', '').lower()
+                if identifier.lower() in filename:
+                    self.log_debug(f"Resolved attachment '{identifier}' to index: {i}")
+                    return str(i)
+            
+            return identifier  # Fallback
+        except Exception as e:
+            self.log_debug(f"Error resolving attachment identifier: {e}")
+            return identifier  # Fallback
+
+    def _search_emails_smart(self, subject_contains: str = None, from_sender: str = None, max_results: int = 5) -> List[Dict]:
+        """Search emails with smart criteria"""
+        try:
+            service, auth_status = self.get_authenticated_service('gmail', 'v1')
+            if not service:
+                return []
+            
+            # Build search query
+            query_parts = []
+            if subject_contains:
+                query_parts.append(f'subject:"{subject_contains}"')
+            if from_sender:
+                query_parts.append(f'from:{from_sender}')
+            
+            query = ' AND '.join(query_parts) if query_parts else ''
+            
+            # Search emails
+            result = service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=max_results
+            ).execute()
+            
+            messages = result.get('messages', [])
+            email_list = []
+            
+            for msg in messages:
+                # Get basic info for each email
+                email_data = service.users().messages().get(
+                    userId='me',
+                    id=msg['id'],
+                    format='metadata'
+                ).execute()
+                
+                headers = {h['name']: h['value'] for h in email_data['payload'].get('headers', [])}
+                
+                email_list.append({
+                    'id': msg['id'],
+                    'subject': headers.get('Subject', 'No Subject'),
+                    'sender': headers.get('From', 'Unknown'),
+                    'date': headers.get('Date', 'Unknown')
+                })
+            
+            return email_list
+        except Exception as e:
+            self.log_debug(f"Error in smart email search: {e}")
+            return []
+
+    def _resolve_drive_file_id(self, identifier: str) -> str:
+        """Convert filename to file ID if needed"""
+        try:
+            # If it looks like a Drive file ID already, return as-is
+            if len(identifier) > 25 and not ' ' in identifier and not '.' in identifier:
+                return identifier
+            
+            # Search by name
+            service, auth_status = self.get_authenticated_service('drive', 'v3')
+            if not service:
+                return identifier
+            
+            # Search for files with name containing the identifier
+            query = f"name contains '{identifier}' and trashed = false"
+            results = service.files().list(q=query, pageSize=5).execute()
+            files = results.get('files', [])
+            
+            if len(files) == 1:
+                self.log_debug(f"Resolved file '{identifier}' to ID: {files[0]['id']}")
+                return files[0]['id']
+            elif len(files) > 1:
+                # Multiple matches - return special marker to trigger disambiguation
+                return f"MULTIPLE_MATCHES:{identifier}"
+            
+            return identifier  # No matches, fallback
+        except Exception as e:
+            self.log_debug(f"Error resolving Drive file ID: {e}")
+            return identifier
 
     def create_draft(self, to: str, subject: str, body: str, reply_to_id: Optional[str] = None) -> str:
         """
@@ -2421,7 +2659,7 @@ Then click this function again to continue setup.
         Get comprehensive details for a specific Drive file
         
         Args:
-            file_id: Google Drive file ID
+            file_id: Google Drive file ID or filename (will search by name if not an ID)
             
         Returns:
             Formatted string with file details
@@ -2430,6 +2668,29 @@ Then click this function again to continue setup.
             drive_service, status = self._get_drive_service()
             if drive_service is None:
                 return status
+            
+            # Smart resolution: Convert filename to file ID if needed
+            original_file_id = file_id
+            file_id = self._resolve_drive_file_id(file_id)
+            
+            # Handle multiple matches
+            if file_id.startswith("MULTIPLE_MATCHES:"):
+                search_term = file_id.split(":", 1)[1]
+                query = f"name contains '{search_term}' and trashed = false"
+                results = drive_service.files().list(q=query, pageSize=10).execute()
+                files = results.get('files', [])
+                
+                response = f"💾 **Found {len(files)} files** matching '{search_term}':\n\n"
+                for i, file in enumerate(files, 1):
+                    response += f"{i}. **{file['name']}**\n"
+                    response += f"   ID: `{file['id']}`\n"
+                    response += f"   Type: {file.get('mimeType', 'unknown')}\n\n"
+                
+                response += "**Usage**: `get_drive_file_details('file_id')` with the exact ID from above."
+                return response
+            
+            if file_id != original_file_id:
+                self.log_debug(f"🎯 Smart resolution: '{original_file_id}' → '{file_id}'")
             
             self.log_debug(f"📋 Getting Drive file details for: {file_id}")
             
@@ -2538,7 +2799,7 @@ Then click this function again to continue setup.
         Download a file from Google Drive to local storage
         
         Args:
-            file_id: Google Drive file ID
+            file_id: Google Drive file ID or filename (will search by name if not an ID)
             local_filename: Local filename (optional, will use Drive filename if not provided)
             
         Returns:
@@ -2548,6 +2809,18 @@ Then click this function again to continue setup.
             drive_service, status = self._get_drive_service()
             if drive_service is None:
                 return status
+            
+            # Smart resolution: Convert filename to file ID if needed
+            original_file_id = file_id
+            file_id = self._resolve_drive_file_id(file_id)
+            
+            # Handle multiple matches
+            if file_id.startswith("MULTIPLE_MATCHES:"):
+                search_term = file_id.split(":", 1)[1]
+                return f"❌ **Multiple files found** matching '{search_term}'. Please use `get_drive_file_details('{search_term}')` to see all matches and get the exact file ID."
+            
+            if file_id != original_file_id:
+                self.log_debug(f"🎯 Smart resolution: '{original_file_id}' → '{file_id}'")
             
             # Get file metadata first
             file_metadata = drive_service.files().get(fileId=file_id, fields="name,size,mimeType").execute()
@@ -2942,13 +3215,22 @@ Then click this function again to continue setup.
             
             # Determine target folder based on strategy
             if folder_strategy == "manual" and target_folder:
+                # Clean folder name - strip trailing punctuation that AI might add
+                cleaned_folder = target_folder.rstrip('.,!?;:')
+                if cleaned_folder != target_folder:
+                    self.log_debug(f"🧹 Cleaned folder name: '{target_folder}' → '{cleaned_folder}'")
+                    target_folder = cleaned_folder
+                
                 # Manual specification
                 if target_folder.startswith('/') or '/' in target_folder:
                     # Path-like specification, find or create folder path
                     folder_id = self._find_or_create_folder_path(target_folder)
-                else:
-                    # Direct folder ID
+                elif len(target_folder) > 25 and not ' ' in target_folder:
+                    # Looks like a Drive folder ID
                     folder_id = target_folder
+                else:
+                    # Simple folder name - search for existing or create
+                    folder_id = self._find_or_create_folder_path(target_folder)
             else:
                 # Auto or hybrid strategy - smart folder organization
                 folder_id = self._determine_smart_folder(email_details, target_folder)
@@ -3042,8 +3324,8 @@ Then click this function again to continue setup.
         
         Args:
             email_id: Gmail message ID
-            attachment_identifier: Attachment ID or index (0-based)
-            target_folder: Drive folder ID or path (None for auto organization)
+            attachment_identifier: Attachment ID, index (0-based), filename, or position ("first", "last", etc.)
+            target_folder: Drive folder ID, folder name, or path (None for auto organization)
             custom_filename: Custom filename for Drive (optional)
             
         Returns:
@@ -3054,6 +3336,12 @@ Then click this function again to continue setup.
             attachments = self._get_attachments_from_email_id(email_id)
             if not attachments:
                 return f"📎 **No attachments found** in email {email_id}"
+            
+            # Smart resolution: Convert filename/position to index
+            original_identifier = attachment_identifier
+            attachment_identifier = self._resolve_attachment_identifier(email_id, attachment_identifier)
+            if attachment_identifier != original_identifier:
+                self.log_debug(f"🎯 Smart resolution: '{original_identifier}' → '{attachment_identifier}'")
             
             # Find the specific attachment
             attachment = None
@@ -3066,6 +3354,12 @@ Then click this function again to continue setup.
                     return f"❌ **Invalid attachment index**: {index} (available: 0-{len(attachments)-1})"
             else:
                 # ID-based selection
+                self.log_debug(f"🔍 Looking for attachment ID: {attachment_identifier[:50]}...")
+                self.log_debug(f"📎 Available attachment IDs in fresh fetch:")
+                for i, att in enumerate(attachments):
+                    att_id = att.get('attachment_id', 'NO_ID')
+                    self.log_debug(f"   {i}: {att_id[:50]}...")
+                
                 for att in attachments:
                     if att.get('attachment_id') == attachment_identifier:
                         attachment = att
@@ -3087,19 +3381,32 @@ Then click this function again to continue setup.
             
             # Determine target folder
             if target_folder:
+                # Clean folder name - strip trailing punctuation that AI might add
+                cleaned_folder = target_folder.rstrip('.,!?;:')
+                if cleaned_folder != target_folder:
+                    self.log_debug(f"🧹 Cleaned folder name: '{target_folder}' → '{cleaned_folder}'")
+                    target_folder = cleaned_folder
+                
                 if target_folder.startswith('/') or '/' in target_folder:
                     # Path-like specification
                     folder_id = self._find_or_create_folder_path(target_folder)
-                else:
-                    # Direct folder ID
+                elif len(target_folder) > 25 and not ' ' in target_folder:
+                    # Looks like a Drive folder ID
                     folder_id = target_folder
+                else:
+                    # Simple folder name - search for existing or create
+                    folder_id = self._find_or_create_folder_path(target_folder)
             else:
                 # Auto organization
                 email_details = self._get_email_details_for_drive_organization(email_id)
                 folder_id = self._determine_smart_folder(email_details)
             
             if not folder_id:
-                return f"❌ **Error**: Could not determine target folder"
+                error_msg = f"❌ **Error**: Could not determine target folder from '{target_folder}'"
+                self.log_debug(error_msg)
+                return error_msg
+            
+            self.log_debug(f"📁 Resolved target folder: '{target_folder}' → '{folder_id}'")
             
             # Use custom filename or original
             filename = custom_filename or attachment.get('filename', 'attachment')
@@ -4411,7 +4718,7 @@ Then click this function again to continue setup.
         Get tasks from a specific task list with filtering options
         
         Args:
-            list_id: ID of the task list (must be the raw Google Tasks API ID)
+            list_id: Task list ID or name (e.g., "@default", "Personal Tasks", or full ID)
             show_completed: Whether to show completed tasks (None = use default setting)
             show_hidden: Whether to show hidden tasks (default: False)
         """
@@ -4422,6 +4729,12 @@ Then click this function again to continue setup.
             if not service:
                 self.log_debug(f"❌ Authentication failed: {auth_status}")
                 return auth_status
+
+            # Smart resolution: Convert task list name to ID if needed
+            original_list_id = list_id
+            list_id = self._resolve_task_list_id(list_id)
+            if list_id != original_list_id:
+                self.log_debug(f"🎯 Smart resolution: '{original_list_id}' → '{list_id}'")
 
             # Use setting or parameter for show_completed
             if show_completed is None:
@@ -5465,6 +5778,559 @@ Then click this function again to continue setup.
         except Exception as e:
             return f"❌ **Authentication error**: {str(e)}"
 
+    def smart_attachment_organizer(
+        self,
+        search_query: str = None,
+        classification_prompt: str = None,
+        target_folder: str = None,
+        dry_run: bool = True,
+        max_emails: int = 10,
+        attachment_filter: str = None,
+        date_range_days: int = 30
+    ) -> str:
+        """
+        Phase 1: Smart Attachment Organizer with LLM-powered classification
+        
+        Automatically search emails, identify relevant attachments using LLM classification,
+        and upload them to Drive folders with comprehensive reporting.
+        
+        Args:
+            search_query: Gmail search query (e.g., "invoice OR receipt", "has:attachment project")
+            classification_prompt: Custom LLM prompt for attachment classification (optional)
+            target_folder: Target Drive folder name/path/ID (optional, enables auto-upload)
+            dry_run: If True, only show what would be uploaded without actually uploading
+            max_emails: Maximum emails to process (1-50, default: 10)
+            attachment_filter: File type filter (e.g., "pdf", "image", "spreadsheet")
+            date_range_days: Limit search to emails from last N days (default: 30)
+            
+        Examples:
+            # Preview tax documents (dry run)
+            smart_attachment_organizer("tax OR invoice OR receipt", dry_run=True)
+            
+            # Upload invoices with custom classification
+            smart_attachment_organizer(
+                search_query="invoice", 
+                classification_prompt="Identify invoices and receipts for business expenses",
+                target_folder="Business Expenses/2024",
+                dry_run=False
+            )
+            
+            # Process project attachments
+            smart_attachment_organizer(
+                search_query="project alpha has:attachment",
+                target_folder="Projects/Alpha/Documents",
+                attachment_filter="pdf"
+            )
+        """
+        try:
+            # Validate inputs
+            max_emails = max(1, min(50, max_emails))
+            date_range_days = max(1, min(365, date_range_days))
+            
+            if not search_query:
+                search_query = "has:attachment"
+                
+            self.log_debug(f"🔍 Smart Organizer starting with query: '{search_query}'")
+            
+            # Phase 1 Implementation: Email search and attachment enumeration
+            return self._phase1_search_and_enumerate(
+                search_query, classification_prompt, target_folder,
+                dry_run, max_emails, attachment_filter, date_range_days
+            )
+            
+        except Exception as e:
+            self.log_error(f"Smart organizer failed: {e}")
+            return f"❌ **Smart Organizer Error**: {str(e)}"
+
+    def _phase1_search_and_enumerate(
+        self,
+        search_query: str,
+        classification_prompt: str,
+        target_folder: str,
+        dry_run: bool,
+        max_emails: int,
+        attachment_filter: str,
+        date_range_days: int
+    ) -> str:
+        """Phase 1: Search emails and enumerate attachments with preview"""
+        try:
+            # Step 1: Search for emails with attachments
+            if self.valves.organizer_enable_progress_logging:
+                self.log_debug("📧 Step 1: Searching for emails with attachments")
+            
+            # Add date filter to search query (only if not already present)
+            has_date_filter = any(keyword in search_query.lower() for keyword in 
+                                ['after:', 'before:', 'newer_than:', 'older_than:'])
+            
+            if has_date_filter:
+                # User provided their own date filters, just ensure has:attachment is included
+                if 'has:attachment' not in search_query.lower():
+                    enhanced_query = f"{search_query} has:attachment"
+                else:
+                    enhanced_query = search_query
+            else:
+                # Add our default date filter
+                date_filter = f" newer_than:{date_range_days}d"
+                enhanced_query = f"{search_query} has:attachment{date_filter}"
+            
+            self.log_debug(f"🔍 Enhanced search query: '{enhanced_query}'")
+            
+            # Search emails
+            search_result = self.search_emails(enhanced_query, max_emails, show_attachments=True)
+            if search_result.startswith("❌"):
+                return search_result
+                
+            # Parse email results from search output
+            self.log_debug(f"📧 Search result to parse:\n{search_result[:500]}...")
+            emails = self._parse_email_search_results(search_result)
+            
+            if not emails:
+                return f"📭 **No emails found** matching query: '{search_query}'\n\nTry a broader search or check the date range ({date_range_days} days)."
+            
+            # Step 2: Enumerate attachments across all emails
+            if self.valves.organizer_enable_progress_logging:
+                self.log_debug(f"📎 Step 2: Enumerating attachments from {len(emails)} emails")
+            
+            total_attachments = 0
+            organized_attachments = []
+            
+            # Process emails in batches for better performance
+            batch_size = self.valves.organizer_batch_size
+            for i in range(0, len(emails), batch_size):
+                batch = emails[i:i + batch_size]
+                batch_result = self._process_email_batch_for_attachments(
+                    batch, attachment_filter, classification_prompt
+                )
+                
+                if batch_result:
+                    organized_attachments.extend(batch_result)
+                    total_attachments += len(batch_result)
+            
+            # Step 3: Generate comprehensive preview report
+            if self.valves.organizer_enable_progress_logging:
+                self.log_debug(f"📊 Step 3: Generating preview report for {total_attachments} attachments")
+            
+            preview_report = self._generate_attachment_preview_report(
+                organized_attachments, search_query, target_folder, dry_run, attachment_filter
+            )
+            
+            # Step 4: Execute uploads if not dry run and target folder specified
+            if not dry_run and target_folder and organized_attachments:
+                upload_report = self._execute_attachment_uploads(organized_attachments, target_folder)
+                return f"{preview_report}\n\n{upload_report}"
+            
+            return preview_report
+            
+        except Exception as e:
+            self.log_error(f"Phase 1 processing failed: {e}")
+            return f"❌ **Phase 1 Error**: {str(e)}"
+
+    def _parse_email_search_results(self, search_output: str) -> List[Dict[str, str]]:
+        """Parse email search results into structured data for processing"""
+        try:
+            emails = []
+            lines = search_output.split('\n')
+            current_email = {}
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Look for numbered email entries like "1. **Subject**📎 2 files (1.2MB)"
+                if re.match(r'^\d+\.\s+\*\*.*\*\*', line):
+                    if current_email:  # Save previous email
+                        emails.append(current_email)
+                    current_email = {}
+                    
+                    # Extract subject (everything between ** and ** before any 📎)
+                    subject_match = re.search(r'\*\*(.*?)\*\*', line)
+                    if subject_match:
+                        current_email['subject'] = subject_match.group(1).strip()
+                    
+                    # Extract attachment info if present
+                    if '📎' in line:
+                        attachment_match = re.search(r'📎\s+(\d+)\s+files?\s*\(([^)]+)\)', line)
+                        if attachment_match:
+                            current_email['attachment_summary'] = f"📎 {attachment_match.group(1)} files ({attachment_match.group(2)})"
+                
+                elif line.startswith('From:') and current_email:
+                    current_email['from'] = line.replace('From:', '').strip()
+                elif line.startswith('Date:') and current_email:
+                    current_email['date'] = line.replace('Date:', '').strip()
+                elif line.startswith('ID:') and current_email:
+                    # Extract ID from backticks: ID: `email_id_here`
+                    id_match = re.search(r'`([^`]+)`', line)
+                    if id_match:
+                        current_email['id'] = id_match.group(1).strip()
+            
+            # Don't forget the last email
+            if current_email:
+                emails.append(current_email)
+            
+            self.log_debug(f"Parsed {len(emails)} emails from search results")
+            return emails
+            
+        except Exception as e:
+            self.log_error(f"Failed to parse email search results: {e}")
+            return []
+
+    def _process_email_batch_for_attachments(
+        self, 
+        emails: List[Dict[str, str]], 
+        attachment_filter: str, 
+        classification_prompt: str
+    ) -> List[Dict]:
+        """Process a batch of emails to extract and classify attachments"""
+        try:
+            batch_attachments = []
+            
+            for email in emails:
+                email_id = email.get('id')
+                if not email_id:
+                    continue
+                    
+                # Get attachment list for this email
+                attachments_result = self.list_email_attachments(email_id)
+                if attachments_result.startswith("❌"):
+                    self.log_debug(f"Skipping email {email_id}: {attachments_result}")
+                    continue
+                
+                # Parse attachments from the output
+                self.log_debug(f"📎 Attachment list output for {email_id}:\n{attachments_result[:500]}...")
+                attachments = self._parse_attachment_list(attachments_result, email_id)
+                
+                # Debug the parsed attachments
+                for att in attachments:
+                    self.log_debug(f"📎 Parsed attachment: {att.get('filename', 'unknown')} -> ID: {att.get('attachment_id', 'missing')[:50]}...")
+                
+                # Apply attachment filter if specified
+                if attachment_filter:
+                    attachments = self._filter_attachments_by_type(attachments, attachment_filter)
+                
+                # Add email context to each attachment
+                for attachment in attachments:
+                    attachment['email_context'] = {
+                        'id': email_id,
+                        'from': email.get('from', 'Unknown'),
+                        'subject': email.get('subject', 'No Subject'),
+                        'date': email.get('date', 'Unknown'),
+                        'attachment_summary': email.get('attachment_summary', '')
+                    }
+                    
+                    # Add LLM classification if enabled and prompt provided
+                    if self.valves.llm_enabled and classification_prompt:
+                        attachment['classification'] = self._classify_attachment_with_llm(
+                            attachment, classification_prompt
+                        )
+                    
+                    batch_attachments.append(attachment)
+            
+            self.log_debug(f"Processed batch: {len(batch_attachments)} attachments from {len(emails)} emails")
+            return batch_attachments
+            
+        except Exception as e:
+            self.log_error(f"Batch processing failed: {e}")
+            return []
+
+    def _parse_attachment_list(self, attachments_output: str, email_id: str) -> List[Dict]:
+        """Parse attachment list output into structured data"""
+        try:
+            attachments = []
+            lines = attachments_output.split('\n')
+            current_attachment = {'email_id': email_id}
+            
+            self.log_debug(f"📎 Parsing {len(lines)} lines of attachment output")
+            
+            for line_num, line in enumerate(lines, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # Look for numbered attachment entries like "1. **filename.pdf**"
+                if re.match(r'^\d+\.\s+\*\*.*\*\*', line):
+                    if current_attachment.get('filename'):  # Save previous
+                        attachments.append(current_attachment.copy())
+                    current_attachment = {'email_id': email_id}
+                    
+                    # Extract filename (everything between ** and **)
+                    filename_match = re.search(r'\*\*(.*?)\*\*', line)
+                    if filename_match:
+                        current_attachment['filename'] = filename_match.group(1).strip()
+                    
+                    # Extract index from the number
+                    index_match = re.match(r'^(\d+)\.', line)
+                    if index_match:
+                        current_attachment['index'] = str(int(index_match.group(1)) - 1)  # Convert to 0-based
+                
+                elif line.startswith('📄 Type:') and current_attachment:
+                    current_attachment['type'] = line.replace('📄 Type:', '').strip()
+                elif line.startswith('📊 Size:') and current_attachment:
+                    # Extract size, ignoring warnings
+                    size_text = line.replace('📊 Size:', '').strip()
+                    if '⚠️' in size_text:
+                        size_text = size_text.split('⚠️')[0].strip()
+                    current_attachment['size'] = size_text
+                elif line.startswith('🔗 Attachment ID:') and current_attachment:
+                    # Extract attachment ID from backticks - be very specific about the format
+                    self.log_debug(f"📎 Line {line_num}: Processing attachment ID line: '{line}'")
+                    id_match = re.search(r'🔗 Attachment ID:\s*`([^`]+)`', line)
+                    if id_match:
+                        attachment_id = id_match.group(1).strip()
+                        # Debug log the found attachment ID
+                        self.log_debug(f"📎 Found attachment ID: '{attachment_id}' (length: {len(attachment_id)})")
+                        current_attachment['attachment_id'] = attachment_id
+                    else:
+                        self.log_debug(f"📎 No attachment ID match found in line: '{line}'")
+                elif line.startswith('💾 Use:') and not current_attachment.get('attachment_id'):
+                    # For inline attachments, extract the index from the usage line
+                    # Format: 💾 Use: `download_email_attachment('email_id', '0', 'filename')`
+                    use_match = re.search(r"download_email_attachment\('[^']*',\s*'([^']*)'", line)
+                    if use_match:
+                        attachment_id = use_match.group(1).strip()
+                        current_attachment['attachment_id'] = attachment_id
+                        self.log_debug(f"📎 Found inline attachment index from use line: '{attachment_id}'")
+            
+            # Don't forget the last attachment
+            if current_attachment.get('filename'):
+                attachments.append(current_attachment)
+            
+            self.log_debug(f"📎 Parsed {len(attachments)} attachments from output")
+            return attachments
+            
+        except Exception as e:
+            self.log_error(f"Failed to parse attachment list: {e}")
+            return []
+
+    def _filter_attachments_by_type(self, attachments: List[Dict], filter_type: str) -> List[Dict]:
+        """Filter attachments by file type"""
+        if not filter_type:
+            return attachments
+            
+        filter_type = filter_type.lower()
+        filtered = []
+        
+        for attachment in attachments:
+            filename = attachment.get('filename', '').lower()
+            file_type = attachment.get('type', '').lower()
+            
+            # Simple type matching
+            if filter_type == 'pdf' and (filename.endswith('.pdf') or 'pdf' in file_type):
+                filtered.append(attachment)
+            elif filter_type == 'image' and any(ext in filename for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']):
+                filtered.append(attachment)
+            elif filter_type == 'spreadsheet' and any(ext in filename for ext in ['.xlsx', '.xls', '.csv']):
+                filtered.append(attachment)
+            elif filter_type == 'document' and any(ext in filename for ext in ['.docx', '.doc', '.txt']):
+                filtered.append(attachment)
+            elif filter_type in filename or filter_type in file_type:
+                filtered.append(attachment)
+        
+        return filtered
+
+    def _classify_attachment_with_llm(self, attachment: Dict, classification_prompt: str) -> Dict:
+        """Classify attachment using LLM (placeholder for Phase 2)"""
+        # Phase 1: Return basic classification without actual LLM call
+        return {
+            'relevant': True,  # Assume relevant for Phase 1
+            'confidence': 0.8,
+            'reasoning': f"Phase 1: Basic classification for {attachment.get('filename', 'unknown file')}",
+            'suggested_folder': None  # Will be implemented in Phase 2
+        }
+
+    def _generate_attachment_preview_report(
+        self,
+        attachments: List[Dict],
+        search_query: str,
+        target_folder: str,
+        dry_run: bool,
+        attachment_filter: str
+    ) -> str:
+        """Generate comprehensive preview report for found attachments"""
+        try:
+            if not attachments:
+                return f"📭 **No attachments found** matching criteria\n\n**Search**: {search_query}\n**Filter**: {attachment_filter or 'None'}"
+            
+            # Group attachments by email for better organization
+            emails_with_attachments = {}
+            total_size = 0
+            
+            for attachment in attachments:
+                email_context = attachment.get('email_context', {})
+                email_id = email_context.get('id', 'unknown')
+                
+                if email_id not in emails_with_attachments:
+                    emails_with_attachments[email_id] = {
+                        'email_info': email_context,
+                        'attachments': []
+                    }
+                
+                emails_with_attachments[email_id]['attachments'].append(attachment)
+                
+                # Calculate total size
+                size_str = attachment.get('size', '0 B')
+                try:
+                    if 'MB' in size_str:
+                        total_size += float(size_str.replace(' MB', ''))
+                    elif 'KB' in size_str:
+                        total_size += float(size_str.replace(' KB', '')) / 1024
+                except:
+                    pass
+            
+            # Generate report
+            report = f"🔍 **Smart Attachment Organizer Preview**\n\n"
+            report += f"**Search Query**: {search_query}\n"
+            report += f"**Filter Applied**: {attachment_filter or 'None'}\n"
+            report += f"**Target Folder**: {target_folder or 'Not specified (dry run mode)'}\n"
+            report += f"**Mode**: {'🔍 Dry Run (Preview Only)' if dry_run else '📤 Upload Mode'}\n\n"
+            
+            report += f"**📊 Summary**:\n"
+            report += f"• **Emails processed**: {len(emails_with_attachments)}\n"
+            report += f"• **Attachments found**: {len(attachments)}\n"
+            report += f"• **Total size**: ~{total_size:.1f} MB\n\n"
+            
+            # Detailed attachment listing
+            report += f"**📎 Detailed Attachment List**:\n\n"
+            
+            for email_id, email_data in emails_with_attachments.items():
+                email_info = email_data['email_info']
+                email_attachments = email_data['attachments']
+                
+                report += f"**Email**: {email_info.get('subject', 'No Subject')}\n"
+                report += f"• **From**: {email_info.get('from', 'Unknown')}\n"
+                report += f"• **Date**: {email_info.get('date', 'Unknown')}\n"
+                report += f"• **Message ID**: `{email_id}`\n"
+                report += f"• **Attachments**: {len(email_attachments)} files\n\n"
+                
+                for i, attachment in enumerate(email_attachments, 1):
+                    filename = attachment.get('filename', 'unknown')
+                    size = attachment.get('size', 'unknown')
+                    file_type = attachment.get('type', 'unknown')
+                    
+                    report += f"  **{i}.** `{filename}`\n"
+                    report += f"     • **Size**: {size}\n"
+                    report += f"     • **Type**: {file_type}\n"
+                    
+                    # Add classification info if available
+                    classification = attachment.get('classification')
+                    if classification:
+                        confidence = classification.get('confidence', 0)
+                        reasoning = classification.get('reasoning', 'No reasoning provided')
+                        report += f"     • **AI Classification**: {confidence:.0%} confidence\n"
+                        report += f"     • **Reasoning**: {reasoning}\n"
+                    
+                    report += "\n"
+                
+                report += "---\n\n"
+            
+            # Action summary
+            if dry_run:
+                report += f"🔍 **This is a preview only**. Use `dry_run=False` and specify a `target_folder` to actually upload files.\n\n"
+                report += f"**Next Steps**:\n"
+                report += f"1. Review the attachments above\n"
+                report += f"2. Specify a target folder (folder name, path, or ID)\n"
+                report += f"3. Set `dry_run=False` to execute uploads\n"
+            elif not target_folder:
+                report += f"⚠️ **No target folder specified**. Files will not be uploaded. Please specify a `target_folder` parameter.\n"
+            else:
+                report += f"📤 **Ready to upload** {len(attachments)} attachments to: `{target_folder}`\n"
+            
+            return report
+            
+        except Exception as e:
+            self.log_error(f"Failed to generate preview report: {e}")
+            return f"❌ **Error generating preview**: {str(e)}"
+
+    def _execute_attachment_uploads(self, attachments: List[Dict], target_folder: str) -> str:
+        """Execute the actual upload of attachments to Drive"""
+        try:
+            if not attachments:
+                return "📭 **No attachments to upload**"
+            
+            upload_report = f"📤 **Executing Attachment Uploads**\n\n"
+            upload_report += f"**Target Folder**: {target_folder}\n"
+            upload_report += f"**Attachments to upload**: {len(attachments)}\n\n"
+            
+            successful_uploads = 0
+            failed_uploads = 0
+            upload_details = []
+            
+            # Process uploads one by one for better error handling
+            for i, attachment in enumerate(attachments, 1):
+                try:
+                    email_id = attachment.get('email_id')
+                    attachment_id = attachment.get('attachment_id')
+                    filename = attachment.get('filename', f'attachment_{i}')
+                    
+                    if not email_id or not attachment_id:
+                        failed_uploads += 1
+                        upload_details.append(f"❌ **{i}.** `{filename}` - Missing email or attachment ID")
+                        continue
+                    
+                    # Use existing upload function
+                    if self.valves.organizer_enable_progress_logging:
+                        self.log_debug(f"🚀 Uploading {i}/{len(attachments)}: {filename}")
+                        self.log_debug(f"   📧 Email ID: {email_id}")
+                        self.log_debug(f"   📎 Attachment ID: {attachment_id[:50]}...")
+                        self.log_debug(f"   📁 Target folder: {target_folder}")
+                        self.log_debug(f"   🎯 Full attachment data: {attachment}")
+                    
+                    # Use index instead of attachment_id since Gmail IDs change between calls
+                    attachment_index = attachment.get('index', '0')
+                    upload_result = self.upload_attachment_to_drive(
+                        email_id, attachment_index, target_folder, filename
+                    )
+                    
+                    # Enhanced error logging
+                    if self.valves.organizer_enable_progress_logging:
+                        self.log_debug(f"📤 Upload result for {filename}: {upload_result[:200]}...")
+                    
+                    if upload_result.startswith("✅"):
+                        successful_uploads += 1
+                        upload_details.append(f"✅ **{i}.** `{filename}` - Upload successful")
+                    else:
+                        failed_uploads += 1
+                        # Extract more detailed error message
+                        if "**Error" in upload_result:
+                            error_msg = upload_result.split("**Error")[-1].strip()
+                        elif "❌" in upload_result:
+                            error_msg = upload_result.split("❌")[-1].strip()
+                        else:
+                            error_msg = upload_result.strip()
+                        
+                        # Log the full error for debugging
+                        if self.valves.organizer_enable_progress_logging:
+                            self.log_debug(f"❌ Upload failed for {filename}: {upload_result}")
+                        
+                        upload_details.append(f"❌ **{i}.** `{filename}` - {error_msg[:100]}...")
+                    
+                    # Progress logging
+                    if self.valves.organizer_enable_progress_logging:
+                        self.log_debug(f"✅ Upload progress: {i}/{len(attachments)} - {filename} - {'Success' if upload_result.startswith('✅') else 'Failed'}")
+                        
+                except Exception as e:
+                    failed_uploads += 1
+                    upload_details.append(f"❌ **{i}.** `{filename}` - Exception: {str(e)}")
+            
+            # Generate final report
+            upload_report += f"**📊 Upload Results**:\n"
+            upload_report += f"• **Successful**: {successful_uploads}\n"
+            upload_report += f"• **Failed**: {failed_uploads}\n"
+            upload_report += f"• **Success Rate**: {(successful_uploads/len(attachments)*100):.1f}%\n\n"
+            
+            upload_report += f"**📋 Detailed Results**:\n"
+            for detail in upload_details:
+                upload_report += f"{detail}\n"
+            
+            if failed_uploads > 0:
+                upload_report += f"\n⚠️ **{failed_uploads} uploads failed**. Check the details above for specific error messages."
+            
+            return upload_report
+            
+        except Exception as e:
+            self.log_error(f"Upload execution failed: {e}")
+            return f"❌ **Upload execution error**: {str(e)}"
+
 # Available functions for the LLM to call
 def setup_authentication() -> str:
     """Start Google Workspace authentication setup process"""
@@ -5491,10 +6357,22 @@ def search_emails(query: str, max_results: int = 10, show_attachments: bool = Tr
     tool = Tools()
     return tool.search_emails(query, max_results, show_attachments)
 
-def get_email_content(email_id: str) -> str:
-    """Get full content of a specific email by ID"""
+def get_email_content(email_id: str = None, subject_contains: str = None, from_sender: str = None) -> str:
+    """
+    Get full content of a specific email - supports smart searching
+    
+    Args:
+        email_id: Gmail message ID (if provided, other params ignored)  
+        subject_contains: Search for emails containing this text in subject
+        from_sender: Search for emails from this sender
+        
+    Examples:
+        get_email_content("1abc123")  # By ID
+        get_email_content(subject_contains="meeting")  # By subject
+        get_email_content(from_sender="john@company.com", subject_contains="project")  # Combined
+    """
     tool = Tools()
-    return tool.get_email_content(email_id)
+    return tool.get_email_content(email_id, subject_contains, from_sender)
 
 def create_draft(to: str, subject: str, body: str, reply_to_id: str = None) -> str:
     """Create a draft email"""
@@ -5648,7 +6526,19 @@ def clear_completed_tasks(list_id: str) -> str:
     return tool.clear_completed_tasks(list_id)
 
 def get_tasks(list_id: str, show_completed: bool = None, show_hidden: bool = False) -> str:
-    """Get tasks from a specific task list with filtering options"""
+    """
+    Get tasks from a specific task list with filtering options
+    
+    Args:
+        list_id: Task list ID or name (e.g., "@default", "Personal Tasks", or full ID)
+        show_completed: Whether to show completed tasks
+        show_hidden: Whether to show hidden tasks
+        
+    Examples:
+        get_tasks("@default")  # Default list
+        get_tasks("Personal")  # Find list by name  
+        get_tasks("Work Tasks", show_completed=True)  # Include completed
+    """
     tool = Tools()
     return tool.get_tasks(list_id, show_completed, show_hidden)
 
@@ -5704,12 +6594,31 @@ def list_drive_folder(folder_name_or_id: str = None, max_results: int = 50) -> s
     return tool.list_drive_files(folder_name_or_id, max_results)
 
 def get_drive_file_details(file_id: str) -> str:
-    """Get comprehensive details for a specific Drive file by ID"""
+    """
+    Get comprehensive details for a specific Drive file
+    
+    Args:
+        file_id: Google Drive file ID or filename (will search by name if not an ID)
+        
+    Examples:
+        get_drive_file_details("1BxiMVs0XRA...")  # By ID
+        get_drive_file_details("Budget 2024.xlsx")  # By filename
+    """
     tool = Tools()
     return tool.get_drive_file_details(file_id)
 
 def download_drive_file(file_id: str, local_filename: str = None) -> str:
-    """Download a file from Google Drive to local storage"""
+    """
+    Download a file from Google Drive to local storage
+    
+    Args:
+        file_id: Google Drive file ID or filename (will search by name if not an ID)
+        local_filename: Optional custom filename for local storage
+        
+    Examples:
+        download_drive_file("1BxiMVs0XRA...")  # By ID
+        download_drive_file("quarterly-report.pdf")  # By filename
+    """
     tool = Tools()
     return tool.download_drive_file(file_id, local_filename)
 
@@ -5734,7 +6643,22 @@ def upload_attachments_to_drive(email_id: str, folder_strategy: str = "auto", ta
     return tool.upload_email_attachments_to_drive(email_id, folder_strategy, target_folder)
 
 def upload_attachment_to_drive(email_id: str, attachment_identifier: str, target_folder: str = None, custom_filename: str = None) -> str:
-    """Upload a specific email attachment to Google Drive"""
+    """
+    Upload a specific email attachment to Google Drive
+    
+    Args:
+        email_id: Gmail message ID
+        attachment_identifier: Attachment ID, index (0-based), filename, or position ("first", "last", etc.)
+        target_folder: Drive folder ID, folder name, or path (None for auto organization)
+        custom_filename: Custom filename for Drive (optional)
+        
+    Examples:
+        upload_attachment_to_drive("email123", "0")  # First attachment by index
+        upload_attachment_to_drive("email123", "invoice.pdf")  # By filename
+        upload_attachment_to_drive("email123", "first", "Invoices")  # Simple folder name
+        upload_attachment_to_drive("email123", "last", "Tax Documents/2024")  # Folder path
+        upload_attachment_to_drive("email123", "0", "1BxiMVs0XRA...")  # Folder ID
+    """
     tool = Tools()
     return tool.upload_attachment_to_drive(email_id, attachment_identifier, target_folder, custom_filename)
 
@@ -5742,4 +6666,53 @@ def get_drive_storage_info() -> str:
     """Get Google Drive storage usage and quota information"""
     tool = Tools()
     return tool.get_drive_storage_info_internal()
+
+def smart_attachment_organizer(
+    search_query: str = None,
+    classification_prompt: str = None,
+    target_folder: str = None,
+    dry_run: bool = True,
+    max_emails: int = 10,
+    attachment_filter: str = None,
+    date_range_days: int = 30
+) -> str:
+    """
+    Phase 1: Smart Attachment Organizer with LLM-powered classification
+    
+    Automatically search emails, identify relevant attachments using LLM classification,
+    and upload them to Drive folders with comprehensive reporting.
+    
+    Args:
+        search_query: Gmail search query (e.g., "invoice OR receipt", "has:attachment project")
+        classification_prompt: Custom LLM prompt for attachment classification (optional)
+        target_folder: Target Drive folder name/path/ID (optional, enables auto-upload)
+        dry_run: If True, only show what would be uploaded without actually uploading
+        max_emails: Maximum emails to process (1-50, default: 10)
+        attachment_filter: File type filter (e.g., "pdf", "image", "spreadsheet")
+        date_range_days: Limit search to emails from last N days (default: 30)
+        
+    Examples:
+        # Preview tax documents (dry run)
+        smart_attachment_organizer("tax OR invoice OR receipt", dry_run=True)
+        
+        # Upload invoices with custom classification
+        smart_attachment_organizer(
+            search_query="invoice", 
+            classification_prompt="Identify invoices and receipts for business expenses",
+            target_folder="Business Expenses/2024",
+            dry_run=False
+        )
+        
+        # Process project attachments
+        smart_attachment_organizer(
+            search_query="project alpha has:attachment",
+            target_folder="Projects/Alpha/Documents",
+            attachment_filter="pdf"
+        )
+    """
+    tool = Tools()
+    return tool.smart_attachment_organizer(
+        search_query, classification_prompt, target_folder,
+        dry_run, max_emails, attachment_filter, date_range_days
+    )
 

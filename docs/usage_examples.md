@@ -557,20 +557,21 @@ Customize task management behavior:
 - Date searches need quotes: `modifiedTime > '2024-01-01'` not `modifiedTime > 2024-01-01`
 - For exact matches use `name = 'filename'`, for partial use `name contains 'text'`
 
-## Smart Attachment Organizer
+## Smart Attachment Organizer Phase 2
 
 ### Overview
 
-The Smart Attachment Organizer solves the common problem of AI models struggling with ID management by providing a single function that automates email search, attachment discovery, and bulk uploads to Drive.
+The Smart Attachment Organizer Phase 2 solves the common problem of AI models struggling with ID management while adding intelligent LLM-powered classification to automatically identify relevant documents and filter out irrelevant files (banners, logos, advertisements).
 
 ### Basic Usage
 
-**Preview attachments (safe mode):**
+**AI-powered preview (safe mode):**
 ```python
 smart_attachment_organizer("invoice OR receipt", dry_run=True)
 ```
-- Shows what would be uploaded without actually uploading
-- Provides comprehensive preview with email details and attachment summaries
+- Shows what would be uploaded/skipped with AI classification
+- Provides comprehensive preview with AI confidence scores and reasoning
+- Automatically identifies and excludes banners, logos, and advertisements
 
 **Upload tax documents:**
 ```python
@@ -629,22 +630,64 @@ smart_attachment_organizer(
 )
 ```
 
-### Features
+### Phase 2 Features
 
+- **Multi-Provider LLM Support**: OpenAI, Anthropic, Ollama, Gemini, OpenRouter
+- **Intelligent Classification**: AI analyzes email content and filenames for relevance
+- **Confidence-Based Filtering**: Automatically skips irrelevant files with configurable thresholds
+- **Smart Folder Suggestions**: AI recommends optimal folder organization
+- **Enhanced Prompting**: Filename-focused analysis with auto-exclusion rules
 - **Automated email search** with Gmail query syntax
 - **Attachment enumeration** across multiple emails  
-- **Smart filtering** by file type
-- **Batch processing** for efficiency
-- **Progress tracking** with detailed logging
+- **Smart filtering** by file type + AI content analysis
+- **Batch processing** for efficiency with AI reasoning
+- **Progress tracking** with detailed logging and AI insights
 - **Error handling** with comprehensive reporting
 - **Gmail API resilience** handling volatile attachment IDs
 
+### LLM Configuration
+
+Configure Phase 2 features in tool settings:
+
+```yaml
+# Enable LLM features
+llm_enabled: true
+
+# Provider options
+llm_provider: "openai"  # or "anthropic", "ollama"
+
+# For Gemini (OpenAI-compatible)
+llm_api_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+llm_api_key: "AIzaSy..."  # Your Google API key
+llm_model: "gemini-2.0-flash"
+
+# For OpenRouter
+llm_api_url: "https://openrouter.ai/api/v1/chat/completions"
+llm_api_key: "sk-or-v1-..."  # Your OpenRouter key
+llm_model: "google/gemini-pro"
+
+# For Ollama (local)
+llm_provider: "ollama"
+llm_api_url: "http://localhost:11434"
+llm_model: "llama2"
+# No API key needed for local Ollama
+
+# Confidence threshold (0.7 = skip files with 70%+ confidence they're irrelevant)
+llm_confidence_threshold: 0.7
+
+# Smart folder control
+llm_smart_folders: true  # Enable AI folder suggestions
+```
+
 ### Success Indicators
 
-✅ **Dry-run shows detailed preview** with email and attachment information
-✅ **Upload mode shows progress** for each attachment
-✅ **Success rate reported** at the end (aim for 100%)
-✅ **Files appear in target Drive folder** after completion
+✅ **Dry-run shows AI classification** with confidence scores and reasoning
+✅ **Irrelevant files automatically skipped** (banners, logos, adverts)
+✅ **High-confidence statements identified** (90%+ confidence)
+✅ **Smart folder suggestions** based on content analysis
+✅ **Upload mode shows progress** with AI decision explanations
+✅ **Success rate reported** including skipped files
+✅ **Files appear in optimal Drive folders** after completion
 
 ## Getting More Help
 

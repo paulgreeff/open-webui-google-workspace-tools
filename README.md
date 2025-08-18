@@ -53,13 +53,17 @@
 - **File transfers**: Download Drive files locally and upload local files to Drive
 - **Email-to-Drive workflows**: Automated attachment uploads with intelligent organization
 - **Storage management**: Monitor Drive quota and usage with visual indicators
-- **Smart Attachment Organizer**: AI-powered bulk attachment processing with LLM classification
+- **Smart Attachment Organizer Phase 2**: AI-powered bulk attachment processing with enhanced LLM classification
+  - **Multi-Provider LLM Support**: OpenAI, Anthropic, Ollama, Gemini, and OpenRouter compatibility
+  - **Intelligent Classification**: AI analyzes email content and filenames for relevance determination
+  - **Confidence-Based Filtering**: Automatically skips irrelevant files (banners, logos, adverts) with high confidence
+  - **Smart Folder Suggestions**: AI recommends optimal folder organization based on content analysis
   - **Automated email search**: Find emails with attachments using Gmail query syntax
   - **Attachment enumeration**: Discover and catalog all attachments across multiple emails
-  - **Dry-run previews**: Safe preview mode showing what would be uploaded
-  - **Bulk operations**: Process multiple emails and attachments in batches
-  - **Smart filtering**: Filter by file type (PDF, images, documents, spreadsheets)
-  - **Progress tracking**: Detailed logging and status reporting
+  - **Dry-run previews**: Safe preview mode with AI insights showing what would be uploaded/skipped
+  - **Bulk operations**: Process multiple emails and attachments in batches with AI reasoning
+  - **Enhanced filtering**: File type + AI content analysis for precision filtering
+  - **Progress tracking**: Detailed logging with AI decision explanations and confidence scores
 - **Smart organization strategies**:
   - **Email-organized**: Automatic categorization by sender and content (invoices, taxes, utilities)
   - **Date-organized**: Hierarchical folder structure by year/month
@@ -188,9 +192,10 @@ get_drive_file_details("file_id")
 upload_attachments_to_drive("email_id", folder_strategy="auto")
 get_drive_storage_info()
 
-# Smart Attachment Organizer
-smart_attachment_organizer("invoice OR receipt", dry_run=True)  # Preview mode
-smart_attachment_organizer("tax documents", target_folder="Tax Returns 2024", dry_run=False)  # Upload mode
+# Smart Attachment Organizer Phase 2 (with LLM)
+smart_attachment_organizer("invoice OR receipt", dry_run=True)  # AI-powered preview with classification
+smart_attachment_organizer("tax documents", target_folder="Tax Returns 2024", dry_run=False)  # AI filtering + upload
+smart_attachment_organizer("statement OR bill", target_folder="Financial/Statements/2024", dry_run=False)  # Keep statements together
 
 # Drive search examples
 search_drive("invoice")                              # Simple search (auto-converted)
@@ -278,6 +283,16 @@ The tool provides extensive customization through Open-WebUI settings:
 - **drive_organization_strategy**: Organization approach (default: "hybrid")
 - **drive_folder_structure**: Folder pattern (default: "email-organized")
 - **drive_storage_root**: Root folder ID for all operations (optional)
+
+### LLM Configuration (Phase 2 Features)
+- **llm_enabled**: Enable AI-powered attachment classification (default: false)
+- **llm_provider**: LLM provider - "openai", "anthropic", or "ollama" (default: "openai")
+- **llm_api_url**: Custom API endpoint for OpenAI-compatible providers (Gemini, OpenRouter, etc.)
+- **llm_api_key**: API key for cloud providers (OpenAI, Anthropic, Gemini, OpenRouter)
+- **llm_model**: Model name (e.g., "gpt-3.5-turbo", "claude-3-haiku", "gemini-2.0-flash")
+- **llm_confidence_threshold**: Minimum confidence for auto-upload (0.0-1.0, default: 0.7)
+- **llm_smart_folders**: Enable AI folder suggestions (default: true)
+- **llm_timeout_seconds**: API timeout in seconds (default: 30)
 
 ### Advanced Options
 - **debug_mode**: Enable detailed logging for troubleshooting

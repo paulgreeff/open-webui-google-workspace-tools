@@ -219,6 +219,11 @@ class Tools:
             description="LLM API timeout in seconds"
         )
         
+        llm_smart_folders: bool = Field(
+            default=True,
+            description="Enable LLM smart folder suggestions (when target_folder not specified)"
+        )
+        
         # Debug Settings
         debug_mode: bool = Field(
             default=False,
@@ -6128,15 +6133,531 @@ Then click this function again to continue setup.
         
         return filtered
 
+    def _call_llm_provider(self, prompt: str, context: Dict = None) -> Dict:
+        """
+        Unified LLM communication method supporting multiple providers
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            context: Additional context for the request
+            
+        Returns:
+            Dict with 'success', 'response', 'error' keys
+        """
+        if not self.valves.llm_enabled:
+            return {
+                'success': False,
+                'response': None,
+                'error': 'LLM integration is disabled'
+            }
+        
+        try:
+            provider = self.valves.llm_provider.lower()
+            
+            if provider == 'openai':
+                return self._call_openai(prompt, context)
+            elif provider == 'anthropic':
+                return self._call_anthropic(prompt, context)
+            elif provider == 'ollama':
+                return self._call_ollama(prompt, context)
+            else:
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': f'Unsupported LLM provider: {provider}'
+                }
+                
+        except Exception as e:
+            self.log_error(f"LLM provider call failed: {e}")
+            return {
+                'success': False,
+                'response': None,
+                'error': str(e)
+            }
+    
+    def _call_openai(self, prompt: str, context: Dict = None) -> Dict:
+        """Call OpenAI-compatible API for attachment classification (supports OpenAI, Gemini, OpenRouter, etc.)"""
+        try:
+            import requests
+            import json
+            
+            if not self.valves.llm_api_key:
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': 'API key not configured'
+                }
+            
+            # Determine API endpoint and authentication format
+            base_api_url = self.valves.llm_api_url or "https://api.openai.com/v1/chat/completions"
+            
+            # Handle different authentication formats
+            headers = {'Content-Type': 'application/json'}
+            
+            # Build the correct API URL first, before adding query parameters
+            if 'googleapis.com' in base_api_url:
+                # Google Gemini with OpenAI compatibility layer
+                if not base_api_url.endswith('/chat/completions'):
+                    if '/openai' in base_api_url:
+                        api_url = base_api_url.rstrip('/') + '/chat/completions'
+                    else:
+                        api_url = base_api_url.rstrip('/') + '/openai/chat/completions'
+                else:
+                    api_url = base_api_url
+                
+                # Add Google API authentication
+                headers['Authorization'] = f'Bearer {self.valves.llm_api_key}'
+                # Add API key as query parameter for Gemini
+                if '?' not in api_url:
+                    api_url += f'?key={self.valves.llm_api_key}'
+                else:
+                    api_url += f'&key={self.valves.llm_api_key}'
+                    
+            elif 'openrouter.ai' in base_api_url:
+                # OpenRouter authentication
+                api_url = base_api_url if base_api_url.endswith('/chat/completions') else base_api_url.rstrip('/') + '/chat/completions'
+                headers['Authorization'] = f'Bearer {self.valves.llm_api_key}'
+                headers['HTTP-Referer'] = 'https://github.com/anthropics/claude-code'
+                headers['X-Title'] = 'Google Workspace Smart Organizer'
+            else:
+                # Standard OpenAI-compatible authentication (OpenAI, local providers, etc.)
+                api_url = base_api_url if base_api_url.endswith('/chat/completions') else base_api_url.rstrip('/') + '/v1/chat/completions'
+                headers['Authorization'] = f'Bearer {self.valves.llm_api_key}'
+            
+            data = {
+                'model': self.valves.llm_model,
+                'messages': [
+                    {
+                        'role': 'system',
+                        'content': 'You are an expert document classifier. Analyze email attachments and provide structured responses in JSON format.'
+                    },
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                'temperature': 0.1,
+                'max_tokens': 500
+            }
+            
+            self.log_debug(f"📡 Making LLM API call to: {api_url}")
+            self.log_debug(f"📡 Model: {self.valves.llm_model}")
+            self.log_debug(f"📡 Headers: {list(headers.keys())}")
+            self.log_debug(f"📡 Request data keys: {list(data.keys())}")
+            
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json=data,
+                timeout=self.valves.llm_timeout_seconds
+            )
+            
+            self.log_debug(f"📡 Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                self.log_debug(f"📡 Response structure: {list(result.keys())}")
+                
+                # Handle different response formats
+                content = None
+                if 'choices' in result and result['choices']:
+                    # Standard OpenAI format
+                    content = result['choices'][0]['message']['content']
+                elif 'candidates' in result and result['candidates']:
+                    # Google Gemini format
+                    content = result['candidates'][0]['content']['parts'][0]['text']
+                elif 'response' in result:
+                    # Some other format
+                    content = result['response']
+                
+                if content:
+                    self.log_debug(f"📡 LLM Response content: {content[:200]}...")
+                    return {
+                        'success': True,
+                        'response': content,
+                        'error': None
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'response': None,
+                        'error': f'Unknown response format: {result}'
+                    }
+            else:
+                error_text = response.text
+                try:
+                    error_json = response.json()
+                    if 'error' in error_json:
+                        error_text = str(error_json['error'])
+                except:
+                    pass
+                
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': f'API error ({response.status_code}): {error_text}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'response': None,
+                'error': f'API call failed: {str(e)}'
+            }
+    
+    def _call_anthropic(self, prompt: str, context: Dict = None) -> Dict:
+        """Call Anthropic API for attachment classification"""
+        try:
+            import requests
+            import json
+            
+            if not self.valves.llm_api_key:
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': 'Anthropic API key not configured'
+                }
+            
+            headers = {
+                'x-api-key': self.valves.llm_api_key,
+                'Content-Type': 'application/json',
+                'anthropic-version': '2023-06-01'
+            }
+            
+            data = {
+                'model': self.valves.llm_model,
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                'max_tokens': 500,
+                'temperature': 0.1
+            }
+            
+            response = requests.post(
+                'https://api.anthropic.com/v1/messages',
+                headers=headers,
+                json=data,
+                timeout=self.valves.llm_timeout_seconds
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['content'][0]['text']
+                return {
+                    'success': True,
+                    'response': content,
+                    'error': None
+                }
+            else:
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': f'Anthropic API error: {response.status_code} - {response.text}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'response': None,
+                'error': f'Anthropic call failed: {str(e)}'
+            }
+    
+    def _call_ollama(self, prompt: str, context: Dict = None) -> Dict:
+        """Call Ollama API for attachment classification"""
+        try:
+            import requests
+            import json
+            
+            api_url = self.valves.llm_api_url or "http://localhost:11434"
+            if not api_url.endswith('/api/generate'):
+                api_url = f"{api_url.rstrip('/')}/api/generate"
+            
+            data = {
+                'model': self.valves.llm_model,
+                'prompt': prompt,
+                'stream': False,
+                'options': {
+                    'temperature': 0.1,
+                    'num_predict': 500
+                }
+            }
+            
+            response = requests.post(
+                api_url,
+                json=data,
+                timeout=self.valves.llm_timeout_seconds
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result.get('response', '')
+                return {
+                    'success': True,
+                    'response': content,
+                    'error': None
+                }
+            else:
+                return {
+                    'success': False,
+                    'response': None,
+                    'error': f'Ollama API error: {response.status_code} - {response.text}'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'response': None,
+                'error': f'Ollama call failed: {str(e)}'
+            }
+    
+    def _build_classification_prompt(self, email_content: Dict, attachments: list) -> str:
+        """Build optimized prompt for attachment classification"""
+        
+        # Extract key email information
+        subject = email_content.get('subject', 'No subject')
+        sender = email_content.get('sender', 'Unknown sender')
+        body_preview = email_content.get('body_preview', '')[:self.valves.organizer_email_context_chars]
+        
+        # Build attachment summary
+        attachment_summary = []
+        for i, att in enumerate(attachments):
+            filename = att.get('filename', f'attachment_{i}')
+            filetype = att.get('type', 'unknown')
+            size = att.get('size', 'unknown size')
+            attachment_summary.append(f"- {filename} ({filetype}, {size})")
+        
+        prompt = f"""Analyze this email and its attachments to determine relevance for document organization.
+
+EMAIL CONTEXT:
+Subject: {subject}
+From: {sender}
+Body Preview: {body_preview}
+
+ATTACHMENTS:
+{chr(10).join(attachment_summary)}
+
+CLASSIFICATION RULES (STRICT):
+1. **FILENAME IS KING**: For PDFs, prioritize filename content over email subject
+2. **AUTO-EXCLUDE**: Files with "banner", "logo", "advert", "advertisement", "promo", "marketing" in filename are NOT relevant
+3. **NUMERICAL PATTERNS**: Look for account numbers, reference numbers, or dates in filenames (e.g., "12345_20240721.pdf")
+4. **SINGLE BEST MATCH**: If multiple attachments, identify the ONE most likely invoice/statement/document
+5. **BE CONSERVATIVE**: When in doubt, mark as not relevant rather than guessing
+
+RELEVANT DOCUMENT TYPES:
+- Statements with account numbers in filename
+- Invoices with reference numbers
+- Bills with clear identifying patterns
+- Tax documents with official formatting
+- Receipts with transaction details
+
+Analyze each attachment and respond with valid JSON in this exact format:
+{{
+  "classifications": [
+    {{
+      "filename": "exact_filename_here",
+      "relevant": true/false,
+      "confidence": 0.0-1.0,
+      "reasoning": "brief explanation focusing on filename analysis",
+      "suggested_folder": "recommended/folder/path"
+    }}
+  ]
+}}
+
+FOLDER SUGGESTIONS:
+- Statements → "Statements/[Provider]"
+- Invoices → "Finance/Invoices/YYYY" 
+- Tax docs → "Tax Documents/YYYY"
+- Receipts → "Finance/Receipts/YYYY"
+- Bills → "Bills/[Utility]/YYYY"
+
+Respond only with valid JSON, no additional text."""
+
+        return prompt
+    
+    def _parse_llm_response(self, response: str) -> Dict:
+        """Parse and validate LLM JSON response"""
+        try:
+            import json
+            import re
+            
+            self.log_debug(f"🔍 Parsing LLM response: {response[:300]}...")
+            
+            # Try to extract JSON from response (handle potential markdown formatting)
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                self.log_debug(f"🔍 Extracted JSON: {json_str[:200]}...")
+            else:
+                json_str = response.strip()
+                self.log_debug(f"🔍 Using full response as JSON: {json_str[:200]}...")
+            
+            # Parse the JSON
+            parsed = json.loads(json_str)
+            self.log_debug(f"🔍 Parsed JSON structure: {list(parsed.keys())}")
+            
+            # Handle both array format and single object format
+            if 'classifications' in parsed:
+                # Standard array format: {"classifications": [...]}
+                classifications = parsed['classifications']
+                if not isinstance(classifications, list):
+                    return None
+                    
+                # Validate each classification
+                for classification in classifications:
+                    required_keys = ['relevant', 'confidence', 'reasoning']
+                    if not all(key in classification for key in required_keys):
+                        return None
+                    
+                    # Ensure confidence is in valid range
+                    confidence = classification.get('confidence', 0.0)
+                    if not (0.0 <= confidence <= 1.0):
+                        classification['confidence'] = max(0.0, min(1.0, confidence))
+                
+                return parsed
+                
+            elif all(key in parsed for key in ['relevant', 'confidence', 'reasoning']):
+                # Single object format: {"relevant": true, "confidence": 0.95, ...}
+                self.log_debug("🔍 Converting single classification to array format")
+                
+                # Ensure confidence is in valid range
+                confidence = parsed.get('confidence', 0.0)
+                if not (0.0 <= confidence <= 1.0):
+                    parsed['confidence'] = max(0.0, min(1.0, confidence))
+                
+                # Convert to array format
+                return {
+                    'classifications': [parsed]
+                }
+            else:
+                self.log_debug(f"🔍 Invalid structure - missing required keys. Found: {list(parsed.keys())}")
+                return None
+            
+        except Exception as e:
+            self.log_error(f"Failed to parse LLM response: {e}")
+            return None
+    
+    def _suggest_folder_path(self, classification: Dict, target_folder: str = None) -> str:
+        """Determine optimal folder path based on classification, user preferences, and context"""
+        
+        # Get LLM suggestion
+        suggested_folder = classification.get('suggested_folder')
+        confidence = classification.get('confidence', 0.0)
+        
+        # If user specified a target folder, respect their choice
+        if target_folder:
+            if self.valves.llm_smart_folders and confidence >= self.valves.llm_confidence_threshold and suggested_folder:
+                # Smart folders enabled + high confidence: use LLM suggestion as subfolder
+                return f"{target_folder.rstrip('/')}/{suggested_folder.split('/')[-1]}"
+            else:
+                # User specified folder takes precedence (keeps statements together)
+                return target_folder
+        
+        # No target folder specified - use LLM suggestions if available and enabled
+        if self.valves.llm_smart_folders and confidence >= self.valves.llm_confidence_threshold and suggested_folder:
+            return suggested_folder
+        
+        # Fallback to default folder from valves or date-based organization
+        if hasattr(self.valves, 'drive_default_folder') and self.valves.drive_default_folder:
+            return self.valves.drive_default_folder
+        
+        # Last resort: use date-based organization
+        from datetime import datetime
+        current_year = datetime.now().year
+        return f"Attachments/{current_year}"
+    
     def _classify_attachment_with_llm(self, attachment: Dict, classification_prompt: str) -> Dict:
-        """Classify attachment using LLM (placeholder for Phase 2)"""
-        # Phase 1: Return basic classification without actual LLM call
-        return {
-            'relevant': True,  # Assume relevant for Phase 1
-            'confidence': 0.8,
-            'reasoning': f"Phase 1: Basic classification for {attachment.get('filename', 'unknown file')}",
-            'suggested_folder': None  # Will be implemented in Phase 2
-        }
+        """Classify attachment using LLM with enhanced Phase 2 implementation"""
+        
+        # Check if LLM is enabled
+        if not self.valves.llm_enabled:
+            # Phase 1 fallback
+            return {
+                'relevant': True,
+                'confidence': 0.6,
+                'reasoning': 'LLM disabled - using Phase 1 fallback (assumed relevant)',
+                'suggested_folder': None
+            }
+        
+        try:
+            # Get email context from attachment
+            email_context = attachment.get('email_context', {})
+            
+            # Build classification prompt if not provided
+            if not classification_prompt:
+                prompt = self._build_classification_prompt(email_context, [attachment])
+            else:
+                # Use custom prompt format
+                filename = attachment.get('filename', 'unknown')
+                filetype = attachment.get('type', 'unknown')
+                subject = email_context.get('subject', 'No subject')
+                sender = email_context.get('sender', 'Unknown')
+                
+                prompt = f"""{classification_prompt}
+
+EMAIL: From {sender}, Subject: "{subject}"
+ATTACHMENT: {filename} ({filetype})
+
+Respond with JSON: {{"relevant": true/false, "confidence": 0.0-1.0, "reasoning": "explanation", "suggested_folder": "path/to/folder"}}"""
+            
+            # Call LLM
+            llm_result = self._call_llm_provider(prompt)
+            
+            if not llm_result['success']:
+                # LLM failed - use Phase 1 fallback
+                return {
+                    'relevant': True,
+                    'confidence': 0.5,
+                    'reasoning': f'LLM call failed: {llm_result["error"]} - using fallback',
+                    'suggested_folder': None
+                }
+            
+            # Parse LLM response
+            parsed_response = self._parse_llm_response(llm_result['response'])
+            
+            if parsed_response and 'classifications' in parsed_response:
+                classifications = parsed_response['classifications']
+                if classifications:
+                    # Return first classification (single attachment)
+                    classification = classifications[0]
+                    return {
+                        'relevant': classification.get('relevant', True),
+                        'confidence': classification.get('confidence', 0.7),
+                        'reasoning': classification.get('reasoning', 'LLM classification'),
+                        'suggested_folder': classification.get('suggested_folder')
+                    }
+            
+            # Parsing failed - try simple JSON extraction
+            try:
+                import json
+                simple_response = json.loads(llm_result['response'])
+                return {
+                    'relevant': simple_response.get('relevant', True),
+                    'confidence': simple_response.get('confidence', 0.7),
+                    'reasoning': simple_response.get('reasoning', 'LLM classification'),
+                    'suggested_folder': simple_response.get('suggested_folder')
+                }
+            except:
+                pass
+            
+            # All parsing failed - use Phase 1 fallback
+            return {
+                'relevant': True,
+                'confidence': 0.5,
+                'reasoning': 'LLM response parsing failed - using fallback',
+                'suggested_folder': None
+            }
+            
+        except Exception as e:
+            self.log_error(f"LLM classification error: {e}")
+            return {
+                'relevant': True,
+                'confidence': 0.4,
+                'reasoning': f'LLM error: {str(e)} - using fallback',
+                'suggested_folder': None
+            }
 
     def _generate_attachment_preview_report(
         self,
@@ -6177,17 +6698,40 @@ Then click this function again to continue setup.
                 except:
                     pass
             
-            # Generate report
-            report = f"🔍 **Smart Attachment Organizer Preview**\n\n"
+            # Calculate LLM insights for summary
+            llm_relevant = 0
+            llm_high_confidence = 0
+            llm_suggested_folders = 0
+            
+            for attachment in attachments:
+                classification = attachment.get('classification', {})
+                if classification.get('relevant', True):
+                    llm_relevant += 1
+                if classification.get('confidence', 0.6) >= self.valves.llm_confidence_threshold:
+                    llm_high_confidence += 1
+                if classification.get('suggested_folder'):
+                    llm_suggested_folders += 1
+            
+            # Generate enhanced report
+            report = f"🔍 **Smart Attachment Organizer Preview (Phase 2)**\n\n"
             report += f"**Search Query**: {search_query}\n"
             report += f"**Filter Applied**: {attachment_filter or 'None'}\n"
-            report += f"**Target Folder**: {target_folder or 'Not specified (dry run mode)'}\n"
+            report += f"**Target Folder**: {target_folder or 'Auto-suggest based on LLM'}\n"
+            report += f"**LLM Classification**: {'Enabled' if self.valves.llm_enabled else 'Disabled (Phase 1 fallback)'}\n"
             report += f"**Mode**: {'🔍 Dry Run (Preview Only)' if dry_run else '📤 Upload Mode'}\n\n"
             
-            report += f"**📊 Summary**:\n"
+            report += f"**📊 Discovery Summary**:\n"
             report += f"• **Emails processed**: {len(emails_with_attachments)}\n"
             report += f"• **Attachments found**: {len(attachments)}\n"
             report += f"• **Total size**: ~{total_size:.1f} MB\n\n"
+            
+            # Add LLM insights if enabled
+            if self.valves.llm_enabled:
+                report += f"**🤖 LLM Classification Summary**:\n"
+                report += f"• **Relevant attachments**: {llm_relevant}/{len(attachments)}\n"
+                report += f"• **High confidence classifications**: {llm_high_confidence}/{len(attachments)}\n"
+                report += f"• **Smart folder suggestions**: {llm_suggested_folders}/{len(attachments)}\n"
+                report += f"• **Confidence threshold**: {self.valves.llm_confidence_threshold}\n\n"
             
             # Detailed attachment listing
             report += f"**📎 Detailed Attachment List**:\n\n"
@@ -6211,13 +6755,39 @@ Then click this function again to continue setup.
                     report += f"     • **Size**: {size}\n"
                     report += f"     • **Type**: {file_type}\n"
                     
-                    # Add classification info if available
-                    classification = attachment.get('classification')
-                    if classification:
-                        confidence = classification.get('confidence', 0)
+                    # Enhanced LLM classification info
+                    classification = attachment.get('classification', {})
+                    if self.valves.llm_enabled and classification:
+                        relevant = classification.get('relevant', True)
+                        confidence = classification.get('confidence', 0.6)
                         reasoning = classification.get('reasoning', 'No reasoning provided')
-                        report += f"     • **AI Classification**: {confidence:.0%} confidence\n"
+                        suggested_folder = classification.get('suggested_folder')
+                        
+                        # Relevance with confidence indicator
+                        relevance_icon = "✅" if relevant else "❌"
+                        confidence_icon = "🎯" if confidence >= self.valves.llm_confidence_threshold else "⚡"
+                        
+                        report += f"     • **LLM Analysis**: {relevance_icon} {'Relevant' if relevant else 'Not relevant'} {confidence_icon} ({confidence:.0%} confidence)\n"
                         report += f"     • **Reasoning**: {reasoning}\n"
+                        
+                        if suggested_folder:
+                            report += f"     • **Suggested Folder**: `{suggested_folder}`\n"
+                        
+                        # Upload action indicator
+                        if dry_run:
+                            if not relevant and confidence >= 0.7:
+                                # High confidence that file is not relevant - would skip
+                                upload_action = f"⏭️ Would skip (not relevant, {confidence:.0%} confidence)"
+                            else:
+                                # Would upload (either relevant, or low confidence about irrelevance)
+                                upload_action = "🔄 Would upload"
+                                final_folder = self._suggest_folder_path(classification, target_folder)
+                                if final_folder and final_folder != target_folder:
+                                    upload_action += f" to `{final_folder}`"
+                            report += f"     • **Action**: {upload_action}\n"
+                    
+                    elif not self.valves.llm_enabled:
+                        report += f"     • **Classification**: Phase 1 fallback (assumed relevant)\n"
                     
                     report += "\n"
                 
@@ -6242,52 +6812,94 @@ Then click this function again to continue setup.
             return f"❌ **Error generating preview**: {str(e)}"
 
     def _execute_attachment_uploads(self, attachments: List[Dict], target_folder: str) -> str:
-        """Execute the actual upload of attachments to Drive"""
+        """Execute the actual upload of attachments to Drive with LLM-enhanced folder assignment"""
         try:
             if not attachments:
                 return "📭 **No attachments to upload**"
             
-            upload_report = f"📤 **Executing Attachment Uploads**\n\n"
-            upload_report += f"**Target Folder**: {target_folder}\n"
-            upload_report += f"**Attachments to upload**: {len(attachments)}\n\n"
+            upload_report = f"📤 **Executing Smart Attachment Uploads (Phase 2)**\n\n"
+            upload_report += f"**Base Target Folder**: {target_folder or 'Auto-suggest based on LLM'}\n"
+            upload_report += f"**LLM Classification**: {'Enabled' if self.valves.llm_enabled else 'Disabled (Phase 1 fallback)'}\n"
+            upload_report += f"**Attachments to process**: {len(attachments)}\n\n"
             
             successful_uploads = 0
             failed_uploads = 0
+            skipped_uploads = 0
             upload_details = []
+            llm_insights = []
             
-            # Process uploads one by one for better error handling
+            # Process uploads one by one with enhanced LLM logic
             for i, attachment in enumerate(attachments, 1):
                 try:
                     email_id = attachment.get('email_id')
                     attachment_id = attachment.get('attachment_id')
                     filename = attachment.get('filename', f'attachment_{i}')
+                    classification = attachment.get('classification', {})
                     
                     if not email_id or not attachment_id:
                         failed_uploads += 1
                         upload_details.append(f"❌ **{i}.** `{filename}` - Missing email or attachment ID")
                         continue
                     
-                    # Use existing upload function
+                    # Get LLM classification data
+                    relevant = classification.get('relevant', True)
+                    confidence = classification.get('confidence', 0.6)
+                    reasoning = classification.get('reasoning', 'No classification available')
+                    suggested_folder = classification.get('suggested_folder')
+                    
+                    # Enhanced progress logging with LLM data
                     if self.valves.organizer_enable_progress_logging:
-                        self.log_debug(f"🚀 Uploading {i}/{len(attachments)}: {filename}")
+                        self.log_debug(f"🚀 Processing {i}/{len(attachments)}: {filename}")
                         self.log_debug(f"   📧 Email ID: {email_id}")
                         self.log_debug(f"   📎 Attachment ID: {attachment_id[:50]}...")
-                        self.log_debug(f"   📁 Target folder: {target_folder}")
-                        self.log_debug(f"   🎯 Full attachment data: {attachment}")
+                        self.log_debug(f"   🤖 LLM Relevant: {relevant}, Confidence: {confidence:.2f}")
+                        self.log_debug(f"   🤖 LLM Reasoning: {reasoning}")
+                        self.log_debug(f"   📁 LLM Suggested Folder: {suggested_folder}")
+                    
+                    # Confidence-based upload decision
+                    if not relevant and confidence >= 0.7:
+                        # High confidence that file is not relevant - skip it
+                        skipped_uploads += 1
+                        if self.valves.organizer_enable_progress_logging:
+                            self.log_debug(f"   ⏭️ SKIPPING: Not relevant with high confidence ({confidence:.2f})")
+                        upload_details.append(
+                            f"⏭️ **{i}.** `{filename}` - Skipped (LLM confidence {confidence:.2f}: {reasoning})"
+                        )
+                        continue
+                    
+                    # Determine optimal upload folder
+                    upload_folder = self._suggest_folder_path(classification, target_folder)
+                    
+                    # Add LLM insight for reporting
+                    llm_insights.append({
+                        'filename': filename,
+                        'confidence': confidence,
+                        'reasoning': reasoning,
+                        'suggested_folder': suggested_folder,
+                        'final_folder': upload_folder,
+                        'relevant': relevant
+                    })
+                    
+                    if self.valves.organizer_enable_progress_logging:
+                        self.log_debug(f"   📁 Final upload folder: {upload_folder}")
                     
                     # Use index instead of attachment_id since Gmail IDs change between calls
                     attachment_index = attachment.get('index', '0')
                     upload_result = self.upload_attachment_to_drive(
-                        email_id, attachment_index, target_folder, filename
+                        email_id, attachment_index, upload_folder, filename
                     )
                     
-                    # Enhanced error logging
+                    # Enhanced result logging with LLM context
                     if self.valves.organizer_enable_progress_logging:
                         self.log_debug(f"📤 Upload result for {filename}: {upload_result[:200]}...")
                     
                     if upload_result.startswith("✅"):
                         successful_uploads += 1
-                        upload_details.append(f"✅ **{i}.** `{filename}` - Upload successful")
+                        confidence_indicator = "🎯" if confidence >= self.valves.llm_confidence_threshold else "⚡"
+                        folder_note = f" → `{upload_folder}`" if upload_folder != target_folder else ""
+                        upload_details.append(
+                            f"✅ **{i}.** `{filename}` {confidence_indicator} (confidence: {confidence:.2f}){folder_note}"
+                        )
                     else:
                         failed_uploads += 1
                         # Extract more detailed error message
@@ -6303,33 +6915,48 @@ Then click this function again to continue setup.
                             self.log_debug(f"❌ Upload failed for {filename}: {upload_result}")
                         
                         upload_details.append(f"❌ **{i}.** `{filename}` - {error_msg[:100]}...")
-                    
-                    # Progress logging
-                    if self.valves.organizer_enable_progress_logging:
-                        self.log_debug(f"✅ Upload progress: {i}/{len(attachments)} - {filename} - {'Success' if upload_result.startswith('✅') else 'Failed'}")
                         
                 except Exception as e:
                     failed_uploads += 1
                     upload_details.append(f"❌ **{i}.** `{filename}` - Exception: {str(e)}")
             
-            # Generate final report
-            upload_report += f"**📊 Upload Results**:\n"
+            # Generate enhanced final report with LLM insights
+            upload_report += f"**📊 Enhanced Upload Results**:\n"
             upload_report += f"• **Successful**: {successful_uploads}\n"
             upload_report += f"• **Failed**: {failed_uploads}\n"
-            upload_report += f"• **Success Rate**: {(successful_uploads/len(attachments)*100):.1f}%\n\n"
+            upload_report += f"• **Skipped**: {skipped_uploads} (not relevant per LLM)\n"
+            total_processed = successful_uploads + failed_uploads + skipped_uploads
+            if total_processed > 0:
+                upload_report += f"• **Success Rate**: {(successful_uploads/total_processed*100):.1f}%\n\n"
+            
+            # Add LLM insights section if enabled
+            if self.valves.llm_enabled and llm_insights:
+                upload_report += f"**🤖 LLM Classification Insights**:\n"
+                high_confidence = sum(1 for insight in llm_insights if insight['confidence'] >= self.valves.llm_confidence_threshold)
+                avg_confidence = sum(insight['confidence'] for insight in llm_insights) / len(llm_insights)
+                upload_report += f"• **High Confidence Classifications**: {high_confidence}/{len(llm_insights)}\n"
+                upload_report += f"• **Average Confidence**: {avg_confidence:.2f}\n"
+                upload_report += f"• **Smart Folder Suggestions**: {sum(1 for insight in llm_insights if insight['suggested_folder'])}\n\n"
             
             upload_report += f"**📋 Detailed Results**:\n"
             for detail in upload_details:
                 upload_report += f"{detail}\n"
             
+            # Enhanced status messages
             if failed_uploads > 0:
                 upload_report += f"\n⚠️ **{failed_uploads} uploads failed**. Check the details above for specific error messages."
+            
+            if skipped_uploads > 0:
+                upload_report += f"\n💡 **{skipped_uploads} files skipped** based on LLM relevance analysis. Adjust `llm_confidence_threshold` if needed."
+            
+            if self.valves.llm_enabled and successful_uploads > 0:
+                upload_report += f"\n🎯 **Smart folder organization** used LLM suggestions for optimal file placement."
             
             return upload_report
             
         except Exception as e:
-            self.log_error(f"Upload execution failed: {e}")
-            return f"❌ **Upload execution error**: {str(e)}"
+            self.log_error(f"Enhanced upload execution failed: {e}")
+            return f"❌ **Enhanced upload execution error**: {str(e)}"
 
 # Available functions for the LLM to call
 def setup_authentication() -> str:
@@ -6677,38 +7304,63 @@ def smart_attachment_organizer(
     date_range_days: int = 30
 ) -> str:
     """
-    Phase 1: Smart Attachment Organizer with LLM-powered classification
+    Phase 2: Smart Attachment Organizer with Enhanced LLM Classification
     
-    Automatically search emails, identify relevant attachments using LLM classification,
-    and upload them to Drive folders with comprehensive reporting.
+    Automatically search emails, use AI to classify attachment relevance and suggest 
+    optimal folder organization, then upload to Drive with intelligent automation.
+    
+    Phase 2 Features:
+    - Multi-provider LLM support (OpenAI, Anthropic, Ollama)
+    - Intelligent relevance classification with confidence scoring
+    - Smart folder path suggestions based on email content and attachment types
+    - Confidence-based upload decisions (skip low-relevance files)
+    - Enhanced reporting with LLM insights and reasoning
     
     Args:
         search_query: Gmail search query (e.g., "invoice OR receipt", "has:attachment project")
         classification_prompt: Custom LLM prompt for attachment classification (optional)
-        target_folder: Target Drive folder name/path/ID (optional, enables auto-upload)
-        dry_run: If True, only show what would be uploaded without actually uploading
+        target_folder: Base Drive folder (LLM can suggest subfolders for better organization)
+        dry_run: If True, preview with AI analysis without uploading (default: True)
         max_emails: Maximum emails to process (1-50, default: 10)
         attachment_filter: File type filter (e.g., "pdf", "image", "spreadsheet")
         date_range_days: Limit search to emails from last N days (default: 30)
         
-    Examples:
-        # Preview tax documents (dry run)
-        smart_attachment_organizer("tax OR invoice OR receipt", dry_run=True)
+    LLM Configuration (in tool settings):
+        llm_enabled: Enable AI classification (set to True for Phase 2 features)
+        llm_provider: "openai", "anthropic", or "ollama" 
+        llm_api_key: API key for cloud providers (OpenAI/Anthropic)
+        llm_model: Model name (e.g., "gpt-3.5-turbo", "claude-3-haiku", "llama2")
+        llm_confidence_threshold: Minimum confidence for auto-upload (0.0-1.0, default: 0.7)
+        llm_smart_folders: Enable AI folder suggestions (default: True, disable to keep all files in target_folder)
         
-        # Upload invoices with custom classification
+    Examples:
+        # Phase 2: AI-powered preview with smart folder suggestions
+        smart_attachment_organizer("tax documents OR receipts", dry_run=True)
+        
+        # Phase 2: AI classification with auto-skip irrelevant files
         smart_attachment_organizer(
-            search_query="invoice", 
-            classification_prompt="Identify invoices and receipts for business expenses",
-            target_folder="Business Expenses/2024",
+            search_query="invoice OR receipt", 
+            target_folder="Finance/2024",
+            dry_run=False  # LLM will suggest optimal subfolders
+        )
+        
+        # Phase 2: Custom AI prompt for specialized classification
+        smart_attachment_organizer(
+            search_query="contract OR agreement",
+            classification_prompt="Identify legal contracts and categorize by contract type",
+            target_folder="Legal/Contracts",
             dry_run=False
         )
         
-        # Process project attachments
+        # Keep all statements together (disable smart folders)
         smart_attachment_organizer(
-            search_query="project alpha has:attachment",
-            target_folder="Projects/Alpha/Documents",
-            attachment_filter="pdf"
+            search_query="statement OR bill",
+            target_folder="Financial/Statements/2024",
+            dry_run=False  # All relevant files go to specified folder
         )
+        
+        # Phase 1 fallback: Works without LLM when llm_enabled=False
+        smart_attachment_organizer("project files", target_folder="Projects", dry_run=False)
     """
     tool = Tools()
     return tool.smart_attachment_organizer(

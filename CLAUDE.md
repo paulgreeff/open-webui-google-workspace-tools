@@ -232,9 +232,9 @@ This tool is designed as an Open-WebUI plugin where:
 6. **Assessment and planning** for next phase
 
 ### Current Status
-- **Active branch**: `feature/smart-organizer-phase2` 
-- **Status**: **Complete 5-service integration with Smart Attachment Organizer Phase 2 ready for production use**
-- **Recent completion**: Smart Attachment Organizer Phase 2 with multi-provider LLM integration
+- **Active branch**: `main` 
+- **Status**: **Complete 5-service integration with Smart Attachment Organizer Phase 2 in production**
+- **Recent completion**: Smart Attachment Organizer Phase 2 with multi-provider LLM integration merged to main
 - **Production testing**: All Google Workspace functions verified working, including enhanced AI-powered attachment classification
 - **Latest achievement**: Intelligent document classification with Gemini (90%+ confidence for statements, auto-excludes adverts/banners)
 - **Next focus**: Testing additional LLM providers (OpenRouter, Ollama) and potential Google Docs integration
